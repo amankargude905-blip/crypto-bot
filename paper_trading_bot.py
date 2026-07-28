@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return '🤖 BTC RL Trading Bot is Live & Running 24/7!'
+    return '🤖 BTC 200pt Buffer MTF Bot is Live & Running 24/7!'
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
@@ -37,7 +37,6 @@ def send_telegram(msg):
         'parse_mode': 'Markdown',
     }).encode('utf-8')
     try:
-        # Added timeout=10 to prevent Telegram hanging
         req = urllib.request.Request(url, data=data)
         with urllib.request.urlopen(req, timeout=10) as resp:
             pass
@@ -58,7 +57,6 @@ def log_to_google_sheet(timestamp, trade_type, entry_p, exit_p, pnl_pts, pnl_usd
     }).encode('utf-8')
 
     try:
-        # Added timeout=10 to prevent Google Sheet hanging
         req = urllib.request.Request(
             SHEET_WEBAPP_URL, data=payload, headers={'Content-Type': 'application/json'}
         )
@@ -68,13 +66,12 @@ def log_to_google_sheet(timestamp, trade_type, entry_p, exit_p, pnl_pts, pnl_usd
         print(f'❌ Google Sheet Sync Error: {e}')
 
 # ===================================================
-# 🌐 LIVE DATA FETCH ENGINE (451 FIXED & TIMEOUT SAFE)
+# 🌐 LIVE DATA FETCH ENGINE
 # ===================================================
 def fetch_recent_klines(symbol='BTCUSDT', interval='5m', limit=1000):
     url = f'https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     
-    # Added timeout=15 to prevent Binance thread lock
     with urllib.request.urlopen(req, timeout=15) as response:
         data = json.loads(response.read().decode())
         
@@ -89,168 +86,222 @@ def fetch_recent_klines(symbol='BTCUSDT', interval='5m', limit=1000):
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
 
-def process_htf_levels(df_5m, tf_code):
-    df_res = (
-        df_5m.resample(tf_code, on='datetime')
-        .agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'})
-        .dropna()
-    )
-    body = (df_res['close'] - df_res['open']).abs()
-    rng = df_res['high'] - df_res['low']
-    ratio = np.where(rng > 0, body / rng, 0.0)
+def process_mtf_live(df_5m):
+    # ATR Calculation
+    high_low = df_5m['high'] - df_5m['low']
+    high_cp = np.abs(df_5m['high'] - df_5m['close'].shift())
+    low_cp = np.abs(df_5m['low'] - df_5m['close'].shift())
+    df_5m['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+    df_5m['atr'] = df_5m['tr'].rolling(14).mean()
 
-    is_doji = ratio <= 0.25
-    doji_pivot = np.where(
-        is_doji, (df_res['open'] + df_res['close']) / 2.0, np.nan
-    )
+    # Daily Doji Logic
+    df_daily = df_5m.resample('D', on='datetime').agg({
+        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+    }).dropna().reset_index()
+    df_daily['body'] = np.abs(df_daily['close'] - df_daily['open'])
+    df_daily['range'] = df_daily['high'] - df_daily['low']
+    df_daily['daily_doji'] = df_daily['body'] <= (df_daily['range'] * 0.25)
+    df_daily['date'] = df_daily['datetime'].dt.date
 
-    is_strong_bull = (ratio >= 0.80) & (df_res['close'] > df_res['open'])
-    is_strong_bear = (ratio >= 0.80) & (df_res['close'] < df_res['open'])
+    # Weekly Strong Candle Logic
+    df_weekly = df_5m.resample('W', on='datetime').agg({
+        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+    }).dropna().reset_index()
+    df_weekly['body'] = np.abs(df_weekly['close'] - df_weekly['open'])
+    df_weekly['range'] = df_weekly['high'] - df_weekly['low']
+    df_weekly['weekly_strong_bull'] = (df_weekly['close'] > df_weekly['open']) & (df_weekly['body'] >= df_weekly['range'] * 0.80)
+    df_weekly['weekly_strong_bear'] = (df_weekly['open'] > df_weekly['close']) & (df_weekly['body'] >= df_weekly['range'] * 0.80)
 
-    strong_buy_level = np.where(is_strong_bull, df_res['close'] + 500.0, np.nan)
-    strong_sell_level = np.where(
-        is_strong_bear, df_res['close'] - 500.0, np.nan
-    )
+    # Weekly Shift(1) to avoid lookahead bias in live trading
+    df_weekly['weekly_strong_bull'] = df_weekly['weekly_strong_bull'].shift(1)
+    df_weekly['weekly_strong_bear'] = df_weekly['weekly_strong_bear'].shift(1)
 
-    res_df = pd.DataFrame(
-        {
-            f'{tf_code}_doji_pivot': doji_pivot,
-            f'{tf_code}_strong_buy': strong_buy_level,
-            f'{tf_code}_strong_sell': strong_sell_level,
-        },
-        index=df_res.index,
-    )
+    df_5m['date'] = df_5m['datetime'].dt.date
+    df_5m['week_id'] = df_5m['datetime'].dt.isocalendar().year.astype(str) + '_' + df_5m['datetime'].dt.isocalendar().week.astype(str)
+    df_weekly['week_id'] = df_weekly['datetime'].dt.isocalendar().year.astype(str) + '_' + df_weekly['datetime'].dt.isocalendar().week.astype(str)
 
-    return res_df.shift(1)
+    df_5m = df_5m.merge(df_daily[['date', 'daily_doji']], on='date', how='left')
+    df_5m = df_5m.merge(df_weekly[['week_id', 'weekly_strong_bull', 'weekly_strong_bear']], on='week_id', how='left')
 
-def build_live_features(df_5m):
-    df_d = process_htf_levels(df_5m, '1D')
-    df_w = process_htf_levels(df_5m, '1W')
-    df_m = process_htf_levels(df_5m, '1ME')
-
-    df_5m_idx = df_5m.set_index('datetime')
-    df_merged = df_5m_idx.join(df_d).join(df_w).join(df_m)
-
-    level_cols = [
-        c
-        for c in df_merged.columns
-        if any(x in c for x in ['doji', 'strong'])
-    ]
-    df_merged[level_cols] = df_merged[level_cols].ffill()
-
-    df_merged['ema200'] = (
-        df_merged['close'].ewm(span=200, adjust=False).mean()
-    )
-    high_low = df_merged['high'] - df_merged['low']
-    high_cp = np.abs(df_merged['high'] - df_merged['close'].shift())
-    low_cp = np.abs(df_merged['low'] - df_merged['close'].shift())
-    tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    df_merged['atr'] = tr.rolling(14).mean().bfill()
-
-    return df_merged.reset_index()
+    return df_5m
 
 # ===================================================
-# 🚀 LIVE PAPER TRADING ENGINE (HANG-PROOF)
+# 🚀 LIVE PAPER TRADING ENGINE (200pt BUFFER + MTF)
 # ===================================================
 def start_paper_trading():
-    print('🚀 Initializing RL Paper Trading Bot...')
+    print('🚀 Initializing 200pt Buffer MTF Paper Trading Bot...')
     send_telegram(
-        '🟢 *PAPER TRADING BOT IS ONLINE!*\n\n'
+        '🟢 *200pt BUFFER MTF PAPER BOT IS ONLINE!*\n\n'
         '💰 *Starting Balance:* $1,000.00\n'
-        '📊 *Google Sheet Sync:* Connected ✅\n'
-        '⚡ *Latency:* 0 Seconds (Real-Time)'
+        '📊 *Strategy:* 200pt Buffer MTF Sweep\n'
+        '⚡ *Latency:* Real-Time Execution'
     )
 
     balance = 1000.0
     position = None
     entry_price = 0.0
-    risk_usd = 20.0  # 2% Risk per trade ($20)
-    be_locked = False
-    sl_dist = 200.0
-    tp_dist = 2000.0
+    sl_price = 0.0
+    tp_price = 0.0
+    position_size = 0.0
+    risk_per_trade = 0.02
+    pt_buffer = 200.0
+    rr_ratio = 3.0
+
+    current_date = None
+    daily_trades = 0
+    zone_level = 1
+    zone_sl_count = 0
+    day_high = 0.0
+    day_low = float('inf')
+    marked_level = None
+    trade_side = None
 
     while True:
         try:
             df_raw = fetch_recent_klines()
-            df_processed = build_live_features(df_raw)
+            df_processed = process_mtf_live(df_raw)
 
             last_row = df_processed.iloc[-1]
             current_price = last_row['close']
             current_time = last_row['datetime'].strftime('%Y-%m-%d %H:%M')
+            candle_date = last_row['date']
 
-            print(f'[{current_time}] BTC Price: ${current_price:.2f}')
+            print(f'[{current_time}] BTC Price: ${current_price:.2f} | Active Position: {position} | Zone: {zone_level}')
 
-            if position is not None:
-                pnl_pts = (
-                    (current_price - entry_price)
-                    if position == 'BUY'
-                    else (entry_price - current_price)
-                )
+            # --- NEW DAY RESET ---
+            if candle_date != current_date:
+                current_date = candle_date
+                daily_trades = 0
+                zone_level = 1
+                zone_sl_count = 0
+                day_high = last_row['high']
+                day_low = last_row['low']
+                marked_level = None
+                trade_side = None
+            else:
+                day_high = max(day_high, last_row['high'])
+                day_low = min(day_low, last_row['low'])
 
-                # Breakeven Check
-                if pnl_pts >= 400.0 and not be_locked:
-                    be_locked = True
+            # --- 1. EXIT CHECK ---
+            if position == 'BUY':
+                if last_row['low'] <= sl_price:
+                    pnl_usd = (sl_price - entry_price) * position_size
+                    balance += pnl_usd
+                    zone_sl_count += 1
+                    daily_trades += 1
                     send_telegram(
-                        f'🛡️ *BREAKEVEN LOCKED (+400 pts)*\n\n'
-                        f'📌 *Position:* {position}\n'
+                        f'🔴 *STOP LOSS HIT (BUY)*\n\n'
                         f'🎯 *Entry:* ${entry_price:.2f}\n'
-                        f'📈 *Current Price:* ${current_price:.2f}'
+                        f'🔻 *Loss:* ${pnl_usd:.2f}\n'
+                        f'🏁 *Balance:* ${balance:.2f}'
                     )
-
-                # Target Hit (1:10)
-                elif pnl_pts >= tp_dist:
-                    gain = risk_usd * 10.0
-                    balance += gain
-                    send_telegram(
-                        f'🎯 *TARGET HIT (1:10 WIN)!* 🎉\n\n'
-                        f'📌 *Type:* {position}\n'
-                        f'💰 *Profit Earned:* +${gain:.2f}\n'
-                        f'🏁 *New Account Balance:* ${balance:.2f}'
-                    )
-                    log_to_google_sheet(
-                        current_time, position, entry_price, current_price, pnl_pts, gain, balance
-                    )
+                    log_to_google_sheet(current_time, 'BUY', entry_price, sl_price, sl_price - entry_price, pnl_usd, balance)
                     position = None
 
-                # Breakeven Exit
-                elif be_locked and pnl_pts <= 0.0:
+                elif last_row['high'] >= tp_price:
+                    pnl_usd = (tp_price - entry_price) * position_size
+                    balance += pnl_usd
+                    daily_trades += 1
                     send_telegram(
-                        f'🛡️ *BREAKEVEN EXIT*\n\n'
-                        f'📌 *Type:* {position}\n'
-                        f'💵 *PnL:* $0.00\n'
-                        f'🏁 *Account Balance:* ${balance:.2f}'
+                        f'🎯 *TARGET HIT (BUY 1:3)* 🎉\n\n'
+                        f'🎯 *Entry:* ${entry_price:.2f}\n'
+                        f'💰 *Profit:* +${pnl_usd:.2f}\n'
+                        f'🏁 *Balance:* ${balance:.2f}'
                     )
-                    log_to_google_sheet(
-                        current_time, position, entry_price, current_price, 0.0, 0.0, balance
+                    log_to_google_sheet(current_time, 'BUY', entry_price, tp_price, tp_price - entry_price, pnl_usd, balance)
+                    position = None
+                    zone_sl_count = 0
+
+            elif position == 'SELL':
+                if last_row['high'] >= sl_price:
+                    pnl_usd = (entry_price - sl_price) * position_size
+                    balance += pnl_usd
+                    zone_sl_count += 1
+                    daily_trades += 1
+                    send_telegram(
+                        f'🔴 *STOP LOSS HIT (SELL)*\n\n'
+                        f'🎯 *Entry:* ${entry_price:.2f}\n'
+                        f'🔻 *Loss:* ${pnl_usd:.2f}\n'
+                        f'🏁 *Balance:* ${balance:.2f}'
                     )
+                    log_to_google_sheet(current_time, 'SELL', entry_price, sl_price, entry_price - sl_price, pnl_usd, balance)
                     position = None
 
-                # Stop Loss Hit
-                elif not be_locked and pnl_pts <= -sl_dist:
-                    balance -= risk_usd
+                elif last_row['low'] <= tp_price:
+                    pnl_usd = (entry_price - tp_price) * position_size
+                    balance += pnl_usd
+                    daily_trades += 1
                     send_telegram(
-                        f'🔴 *STOP LOSS HIT (200pt)*\n\n'
-                        f'📌 *Type:* {position}\n'
-                        f'🔻 *Loss:* -${risk_usd:.2f}\n'
-                        f'🏁 *New Account Balance:* ${balance:.2f}'
+                        f'🎯 *TARGET HIT (SELL 1:3)* 🎉\n\n'
+                        f'🎯 *Entry:* ${entry_price:.2f}\n'
+                        f'💰 *Profit:* +${pnl_usd:.2f}\n'
+                        f'🏁 *Balance:* ${balance:.2f}'
                     )
-                    log_to_google_sheet(
-                        current_time, position, entry_price, current_price, -sl_dist, -risk_usd, balance
-                    )
+                    log_to_google_sheet(current_time, 'SELL', entry_price, tp_price, entry_price - tp_price, pnl_usd, balance)
                     position = None
+                    zone_sl_count = 0
 
-            # 5 Minute Interval
+            # --- 2. ZONE SHIFT LOGIC ---
+            if zone_sl_count >= 3:
+                if zone_level < 3:
+                    zone_level += 1
+                    zone_sl_count = 0
+                    if trade_side == 'SELL':
+                        marked_level = day_high + pt_buffer
+                    else:
+                        marked_level = day_low - pt_buffer
+                else:
+                    marked_level = None
+
+            # --- 3. ENTRY TRIGGER CHECK ---
+            if position is None and daily_trades < 9:
+                if marked_level is None and zone_level == 1:
+                    if last_row['daily_doji'] or last_row['weekly_strong_bull']:
+                        trade_side = 'BUY'
+                        marked_level = current_price + pt_buffer
+                    elif last_row['daily_doji'] or last_row['weekly_strong_bear']:
+                        trade_side = 'SELL'
+                        marked_level = current_price - pt_buffer
+
+                if marked_level is not None:
+                    atr = last_row['atr']
+                    risk_amount = balance * risk_per_trade
+
+                    if trade_side == 'BUY' and last_row['high'] >= marked_level:
+                        position = 'BUY'
+                        entry_price = marked_level
+                        sl_price = entry_price - (atr * 1.5)
+                        tp_price = entry_price + ((atr * 1.5) * rr_ratio)
+                        position_size = risk_amount / max(1.0, (entry_price - sl_price))
+                        send_telegram(
+                            f'🚀 *BUY ORDER EXECUTED*\n\n'
+                            f'📍 *Entry:* ${entry_price:.2f}\n'
+                            f'🛑 *SL:* ${sl_price:.2f}\n'
+                            f'🎯 *TP:* ${tp_price:.2f}\n'
+                            f'📍 *Zone:* {zone_level}'
+                        )
+
+                    elif trade_side == 'SELL' and last_row['low'] <= marked_level:
+                        position = 'SELL'
+                        entry_price = marked_level
+                        sl_price = entry_price + (atr * 1.5)
+                        tp_price = entry_price - ((atr * 1.5) * rr_ratio)
+                        position_size = risk_amount / max(1.0, (sl_price - entry_price))
+                        send_telegram(
+                            f'🔻 *SELL ORDER EXECUTED*\n\n'
+                            f'📍 *Entry:* ${entry_price:.2f}\n'
+                            f'🛑 *SL:* ${sl_price:.2f}\n'
+                            f'🎯 *TP:* ${tp_price:.2f}\n'
+                            f'📍 *Zone:* {zone_level}'
+                        )
+
             time.sleep(300)
 
         except Exception as e:
-            # Full catch-all to prevent thread crashes
-            print(f'⚠️ Temporary network error in live loop: {e}')
+            print(f'⚠️ Error in live paper trading loop: {e}')
             traceback.print_exc()
-            time.sleep(15)  # Quick retry after 15 seconds if API drops
+            time.sleep(15)
 
 if __name__ == '__main__':
-    # Background Thread for Flask
     threading.Thread(target=run_flask, daemon=True).start()
-
-    # Main Trading Loop
     start_paper_trading()
