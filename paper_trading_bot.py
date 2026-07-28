@@ -4,25 +4,23 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import traceback
 from flask import Flask
 import numpy as np
 import pandas as pd
 
 # ===================================================
-# 🌐 FLASK WEB SERVER (Render 24/7 Keep-Alive Ke Liye)
+# 🌐 FLASK WEB SERVER (Render 24/7 Keep-Alive)
 # ===================================================
 app = Flask(__name__)
-
 
 @app.route('/')
 def home():
     return '🤖 BTC RL Trading Bot is Live & Running 24/7!'
 
-
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
-
 
 # ===================================================
 # 🔑 LIVE CONFIGURATION
@@ -30,7 +28,6 @@ def run_flask():
 BOT_TOKEN = '8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc'
 CHAT_ID = '1862803975'
 SHEET_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzQHhdk3UH4vZStrRuIuHI4K4V9FGbj6R3UqpPNBXmHTv3CIf9P4jS3393G_32sapfolQ/exec'
-
 
 def send_telegram(msg):
     url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
@@ -40,16 +37,14 @@ def send_telegram(msg):
         'parse_mode': 'Markdown',
     }).encode('utf-8')
     try:
+        # Added timeout=10 to prevent Telegram hanging
         req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             pass
     except Exception as e:
         print(f'❌ Telegram Error: {e}')
 
-
-def log_to_google_sheet(
-    timestamp, trade_type, entry_p, exit_p, pnl_pts, pnl_usd, balance
-):
+def log_to_google_sheet(timestamp, trade_type, entry_p, exit_p, pnl_pts, pnl_usd, balance):
     if not SHEET_WEBAPP_URL:
         return
     payload = json.dumps({
@@ -63,24 +58,26 @@ def log_to_google_sheet(
     }).encode('utf-8')
 
     try:
+        # Added timeout=10 to prevent Google Sheet hanging
         req = urllib.request.Request(
             SHEET_WEBAPP_URL, data=payload, headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             print('📊 Trade successfully synced to Google Sheet!')
     except Exception as e:
         print(f'❌ Google Sheet Sync Error: {e}')
 
-
 # ===================================================
-# 🌐 LIVE DATA FETCH ENGINE (451 FIXED)
+# 🌐 LIVE DATA FETCH ENGINE (451 FIXED & TIMEOUT SAFE)
 # ===================================================
 def fetch_recent_klines(symbol='BTCUSDT', interval='5m', limit=1000):
-    # Fixed URL: Changed from api.binance.com to data-api.binance.vision to bypass Render US IP block
     url = f'https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req) as response:
+    
+    # Added timeout=15 to prevent Binance thread lock
+    with urllib.request.urlopen(req, timeout=15) as response:
         data = json.loads(response.read().decode())
+        
     all_candles = [
         [c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])]
         for c in data
@@ -91,7 +88,6 @@ def fetch_recent_klines(symbol='BTCUSDT', interval='5m', limit=1000):
     )
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
-
 
 def process_htf_levels(df_5m, tf_code):
     df_res = (
@@ -127,7 +123,6 @@ def process_htf_levels(df_5m, tf_code):
 
     return res_df.shift(1)
 
-
 def build_live_features(df_5m):
     df_d = process_htf_levels(df_5m, '1D')
     df_w = process_htf_levels(df_5m, '1W')
@@ -154,9 +149,8 @@ def build_live_features(df_5m):
 
     return df_merged.reset_index()
 
-
 # ===================================================
-# 🚀 LIVE PAPER TRADING ENGINE
+# 🚀 LIVE PAPER TRADING ENGINE (HANG-PROOF)
 # ===================================================
 def start_paper_trading():
     print('🚀 Initializing RL Paper Trading Bot...')
@@ -245,17 +239,18 @@ def start_paper_trading():
                     )
                     position = None
 
-            # Sleep for 5 minutes
+            # 5 Minute Interval
             time.sleep(300)
 
         except Exception as e:
-            print(f'⚠️ Error in live loop: {e}')
-            time.sleep(10)
-
+            # Full catch-all to prevent thread crashes
+            print(f'⚠️ Temporary network error in live loop: {e}')
+            traceback.print_exc()
+            time.sleep(15)  # Quick retry after 15 seconds if API drops
 
 if __name__ == '__main__':
-    # Background mein Flask server start karein (Render deployment ke liye)
+    # Background Thread for Flask
     threading.Thread(target=run_flask, daemon=True).start()
 
-    # Main Bot Loop start karein
+    # Main Trading Loop
     start_paper_trading()
