@@ -46,29 +46,44 @@ def log_to_sheet(data):
         print(f"Sheet Error: {e}")
 
 def fetch_btc_data():
-    """Fetch current 5m BTC candle and HTF indicators via Binance Public API"""
-    try:
-        # Current Price / 5m Candle
-        r = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1", timeout=5)
-        data = r.json()
-        current_price = float(data[0][4])
-        
-        # Daily Candles (for Doji check)
-        r_d = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=3", timeout=5)
-        d_data = r_d.json()
-        
-        # Weekly Candles
-        r_w = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=2", timeout=5)
-        w_data = r_w.json()
+    """Fetch current 5m BTC candle and HTF indicators via Binance Public API with Headers & Fallback"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    endpoints = [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api3.binance.com"
+    ]
 
-        # Monthly Candles
-        r_m = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=2", timeout=5)
-        m_data = r_m.json()
+    for base_url in endpoints:
+        try:
+            # Current Price / 5m Candle
+            r = requests.get(f"{base_url}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5)
+            r.raise_for_status()
+            data = r.json()
+            current_price = float(data[0][4])
+            
+            # Daily Candles (for Doji check)
+            r_d = requests.get(f"{base_url}/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=3", headers=headers, timeout=5)
+            d_data = r_d.json()
+            
+            # Weekly Candles
+            r_w = requests.get(f"{base_url}/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=2", headers=headers, timeout=5)
+            w_data = r_w.json()
 
-        return current_price, d_data, w_data, m_data
-    except Exception as e:
-        print(f"Data Fetch Error: {e}")
-        return None, None, None, None
+            # Monthly Candles
+            r_m = requests.get(f"{base_url}/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=2", headers=headers, timeout=5)
+            m_data = r_m.json()
+
+            return current_price, d_data, w_data, m_data
+
+        except Exception as e:
+            continue
+            
+    print("Data Fetch Error: All Binance endpoints failed")
+    return None, None, None, None
 
 def analyze_candle_structure(open_p, high_p, low_p, close_p):
     total_range = high_p - low_p
@@ -313,3 +328,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+    
