@@ -1,307 +1,315 @@
-import json
 import os
-import threading
 import time
-import urllib.parse
-import urllib.request
-import traceback
-from flask import Flask
-import numpy as np
-import pandas as pd
+import requests
+from datetime import datetime, timezone
 
-# ===================================================
-# 🌐 FLASK WEB SERVER (Render 24/7 Keep-Alive)
-# ===================================================
-app = Flask(__name__)
+# --- CONFIGURATION & ENV VARS ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+SHEET_WEBAPP_URL = os.getenv("SHEET_WEBAPP_URL", "")
 
-@app.route('/')
-def home():
-    return '🤖 BTC 200pt Buffer MTF Bot is Live & Running 24/7!'
+ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
+RISK_PER_TRADE_PCT = 0.01  # 1% Risk per trade
+SL_POINTS = 200.0           # Fixed 200 Points SL
+TP_POINTS = 2000.0          # Fixed 1:10 RR Target (2000 Points)
 
-def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+# Trailing Config
+TRAIL_TRIGGER_PTS = 1600.0
+TRAIL_LOCK_PTS = 600.0
 
-# ===================================================
-# 🔑 LIVE CONFIGURATION
-# ===================================================
-BOT_TOKEN = '8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc'
-CHAT_ID = '1862803975'
-SHEET_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbzQHhdk3UH4vZStrRuIuHI4K4V9FGbj6R3UqpPNBXmHTv3CIf9P4jS3393G_32sapfolQ/exec'
+# State Tracking
+current_position = None  # Dict for active position
+zone_sl_count = 0        # Continuous SL count (0 to 3)
+current_zone = 1         # Zone 1, Zone 2, Zone 3
+total_trades_today = 0   # Max 9 trades limit
 
-def send_telegram(msg):
-    url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
-    data = urllib.parse.urlencode({
-        'chat_id': CHAT_ID,
-        'text': msg,
-        'parse_mode': 'Markdown',
-    }).encode('utf-8')
+day_high = None
+day_low = None
+current_day_str = ""
+
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            pass
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f'❌ Telegram Error: {e}')
+        print(f"Telegram Error: {e}")
 
-def log_to_google_sheet(timestamp, trade_type, entry_p, exit_p, pnl_pts, pnl_usd, balance):
+def log_to_sheet(data):
     if not SHEET_WEBAPP_URL:
         return
-    payload = json.dumps({
-        'timestamp': timestamp,
-        'type': trade_type,
-        'entry_price': round(entry_p, 2),
-        'exit_price': round(exit_p, 2),
-        'pnl_pts': round(pnl_pts, 2),
-        'pnl_usd': round(pnl_usd, 2),
-        'balance': round(balance, 2),
-    }).encode('utf-8')
-
     try:
-        req = urllib.request.Request(
-            SHEET_WEBAPP_URL, data=payload, headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print('📊 Trade successfully synced to Google Sheet!')
+        requests.post(SHEET_WEBAPP_URL, json=data, timeout=5)
     except Exception as e:
-        print(f'❌ Google Sheet Sync Error: {e}')
+        print(f"Sheet Error: {e}")
 
-# ===================================================
-# 🌐 LIVE DATA FETCH ENGINE
-# ===================================================
-def fetch_recent_klines(symbol='BTCUSDT', interval='5m', limit=1000):
-    url = f'https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    
-    with urllib.request.urlopen(req, timeout=15) as response:
-        data = json.loads(response.read().decode())
+def fetch_btc_data():
+    """Fetch current 5m BTC candle and HTF indicators via Binance Public API"""
+    try:
+        # Current Price / 5m Candle
+        r = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1", timeout=5)
+        data = r.json()
+        current_price = float(data[0][4])
         
-    all_candles = [
-        [c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])]
-        for c in data
-    ]
-    df = pd.DataFrame(
-        all_candles,
-        columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'],
-    )
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+        # Daily Candles (for Doji check)
+        r_d = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=3", timeout=5)
+        d_data = r_d.json()
+        
+        # Weekly Candles
+        r_w = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=2", timeout=5)
+        w_data = r_w.json()
 
-def process_mtf_live(df_5m):
-    # ATR Calculation
-    high_low = df_5m['high'] - df_5m['low']
-    high_cp = np.abs(df_5m['high'] - df_5m['close'].shift())
-    low_cp = np.abs(df_5m['low'] - df_5m['close'].shift())
-    df_5m['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    df_5m['atr'] = df_5m['tr'].rolling(14).mean()
+        # Monthly Candles
+        r_m = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=2", timeout=5)
+        m_data = r_m.json()
 
-    # Daily Doji Logic
-    df_daily = df_5m.resample('D', on='datetime').agg({
-        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
-    }).dropna().reset_index()
-    df_daily['body'] = np.abs(df_daily['close'] - df_daily['open'])
-    df_daily['range'] = df_daily['high'] - df_daily['low']
-    df_daily['daily_doji'] = df_daily['body'] <= (df_daily['range'] * 0.25)
-    df_daily['date'] = df_daily['datetime'].dt.date
+        return current_price, d_data, w_data, m_data
+    except Exception as e:
+        print(f"Data Fetch Error: {e}")
+        return None, None, None, None
 
-    # Weekly Strong Candle Logic
-    df_weekly = df_5m.resample('W', on='datetime').agg({
-        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
-    }).dropna().reset_index()
-    df_weekly['body'] = np.abs(df_weekly['close'] - df_weekly['open'])
-    df_weekly['range'] = df_weekly['high'] - df_weekly['low']
-    df_weekly['weekly_strong_bull'] = (df_weekly['close'] > df_weekly['open']) & (df_weekly['body'] >= df_weekly['range'] * 0.80)
-    df_weekly['weekly_strong_bear'] = (df_weekly['open'] > df_weekly['close']) & (df_weekly['body'] >= df_weekly['range'] * 0.80)
+def analyze_candle_structure(open_p, high_p, low_p, close_p):
+    total_range = high_p - low_p
+    if total_range == 0:
+        return "NORMAL", 0.0
+    body = abs(close_p - open_p)
+    body_pct = (body / total_range) * 100
+    
+    is_green = close_p >= open_p
+    close_pct_from_low = ((close_p - low_p) / total_range) * 100
+    close_pct_from_high = ((high_p - close_p) / total_range) * 100
 
-    # Weekly Shift(1) to avoid lookahead bias in live trading
-    df_weekly['weekly_strong_bull'] = df_weekly['weekly_strong_bull'].shift(1)
-    df_weekly['weekly_strong_bear'] = df_weekly['weekly_strong_bear'].shift(1)
+    if body_pct <= 25.0:
+        return "DOJI", body_pct
+    elif body_pct >= 80.0:
+        return "STRONG_BULL" if is_green else "STRONG_BEAR", body_pct
+    elif is_green and close_pct_from_high >= 30.0: # Closing <= 70% from High
+        return "DICY_GREEN", close_pct_from_high
+    elif not is_green and close_pct_from_low >= 30.0: # Closing <= 70% from Low
+        return "DICY_RED", close_pct_from_low
+    
+    return "NORMAL", body_pct
 
-    df_5m['date'] = df_5m['datetime'].dt.date
-    df_5m['week_id'] = df_5m['datetime'].dt.isocalendar().year.astype(str) + '_' + df_5m['datetime'].dt.isocalendar().week.astype(str)
-    df_weekly['week_id'] = df_weekly['datetime'].dt.isocalendar().year.astype(str) + '_' + df_weekly['datetime'].dt.isocalendar().week.astype(str)
+def run_bot():
+    global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_trades_today
+    global day_high, day_low, current_day_str
 
-    df_5m = df_5m.merge(df_daily[['date', 'daily_doji']], on='date', how='left')
-    df_5m = df_5m.merge(df_weekly[['week_id', 'weekly_strong_bull', 'weekly_strong_bear']], on='week_id', how='left')
-
-    return df_5m
-
-# ===================================================
-# 🚀 LIVE PAPER TRADING ENGINE (200pt BUFFER + MTF)
-# ===================================================
-def start_paper_trading():
-    print('🚀 Initializing 200pt Buffer MTF Paper Trading Bot...')
-    send_telegram(
-        '🟢 *200pt BUFFER MTF PAPER BOT IS ONLINE!*\n\n'
-        '💰 *Starting Balance:* $1,000.00\n'
-        '📊 *Strategy:* 200pt Buffer MTF Sweep\n'
-        '⚡ *Latency:* Real-Time Execution'
-    )
-
-    balance = 1000.0
-    position = None
-    entry_price = 0.0
-    sl_price = 0.0
-    tp_price = 0.0
-    position_size = 0.0
-    risk_per_trade = 0.02
-    pt_buffer = 200.0
-    rr_ratio = 3.0
-
-    current_date = None
-    daily_trades = 0
-    zone_level = 1
-    zone_sl_count = 0
-    day_high = 0.0
-    day_low = float('inf')
-    marked_level = None
-    trade_side = None
+    print("🚀 Aman's Precision Master Strategy Bot Started...")
+    send_telegram("🚀 *Master Paper Trading Bot Started Live on Render!*")
 
     while True:
         try:
-            df_raw = fetch_recent_klines()
-            df_processed = process_mtf_live(df_raw)
+            now_utc = datetime.now(timezone.utc)
+            today_str = now_utc.strftime("%Y-%m-%d")
 
-            last_row = df_processed.iloc[-1]
-            current_price = last_row['close']
-            current_time = last_row['datetime'].strftime('%Y-%m-%d %H:%M')
-            candle_date = last_row['date']
-
-            print(f'[{current_time}] BTC Price: ${current_price:.2f} | Active Position: {position} | Zone: {zone_level}')
-
-            # --- NEW DAY RESET ---
-            if candle_date != current_date:
-                current_date = candle_date
-                daily_trades = 0
-                zone_level = 1
+            # Daily Reset at UTC midnight
+            if today_str != current_day_str:
+                current_day_str = today_str
+                day_high = None
+                day_low = None
                 zone_sl_count = 0
-                day_high = last_row['high']
-                day_low = last_row['low']
-                marked_level = None
-                trade_side = None
-            else:
-                day_high = max(day_high, last_row['high'])
-                day_low = min(day_low, last_row['low'])
+                current_zone = 1
+                total_trades_today = 0
+                print(f"🔄 New UTC Day Reset: {current_day_str}")
 
-            # --- 1. EXIT CHECK ---
-            if position == 'BUY':
-                if last_row['low'] <= sl_price:
-                    pnl_usd = (sl_price - entry_price) * position_size
-                    balance += pnl_usd
-                    zone_sl_count += 1
-                    daily_trades += 1
-                    send_telegram(
-                        f'🔴 *STOP LOSS HIT (BUY)*\n\n'
-                        f'🎯 *Entry:* ${entry_price:.2f}\n'
-                        f'🔻 *Loss:* ${pnl_usd:.2f}\n'
-                        f'🏁 *Balance:* ${balance:.2f}'
-                    )
-                    log_to_google_sheet(current_time, 'BUY', entry_price, sl_price, sl_price - entry_price, pnl_usd, balance)
-                    position = None
+            btc_price, d_klines, w_klines, m_klines = fetch_btc_data()
+            if btc_price is None:
+                time.sleep(10)
+                continue
 
-                elif last_row['high'] >= tp_price:
-                    pnl_usd = (tp_price - entry_price) * position_size
-                    balance += pnl_usd
-                    daily_trades += 1
-                    send_telegram(
-                        f'🎯 *TARGET HIT (BUY 1:3)* 🎉\n\n'
-                        f'🎯 *Entry:* ${entry_price:.2f}\n'
-                        f'💰 *Profit:* +${pnl_usd:.2f}\n'
-                        f'🏁 *Balance:* ${balance:.2f}'
-                    )
-                    log_to_google_sheet(current_time, 'BUY', entry_price, tp_price, tp_price - entry_price, pnl_usd, balance)
-                    position = None
+            # Dynamic Day High/Low Tracking
+            day_high = btc_price if day_high is None else max(day_high, btc_price)
+            day_low = btc_price if day_low is None else min(day_low, btc_price)
+
+            # Check for Active Position Management
+            if current_position is not None:
+                side = current_position['side']
+                entry_p = current_position['entry_price']
+                sl_p = current_position['sl_price']
+                tp_p = current_position['tp_price']
+                qty = current_position['qty']
+
+                # 1. Step-Trailing Logic (+1600 pts move -> Lock +600 pts)
+                if side == 'BUY':
+                    max_favorable = btc_price - entry_p
+                    if max_favorable >= TRAIL_TRIGGER_PTS:
+                        new_sl = entry_p + TRAIL_LOCK_PTS
+                        if new_sl > sl_p:
+                            current_position['sl_price'] = new_sl
+                            send_telegram(f"🛡️ *Trailing SL Updated (BUY)*\nNew SL Locked: ${new_sl:.2f}")
+
+                    # Check TP / SL Hit
+                    if btc_price >= tp_p:
+                        pnl = qty * (tp_p - entry_p)
+                        ACCOUNT_BALANCE += pnl
+                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
+                        log_to_sheet({"type": "EXIT_TP", "pnl": pnl, "balance": ACCOUNT_BALANCE})
+                        current_position = None
+                    elif btc_price <= sl_p:
+                        loss = qty * (entry_p - sl_p)
+                        ACCOUNT_BALANCE -= loss
+                        zone_sl_count += 1
+                        total_trades_today += 1
+                        send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3")
+                        log_to_sheet({"type": "EXIT_SL", "loss": loss, "balance": ACCOUNT_BALANCE})
+                        current_position = None
+
+                elif side == 'SELL':
+                    max_favorable = entry_p - btc_price
+                    if max_favorable >= TRAIL_TRIGGER_PTS:
+                        new_sl = entry_p - TRAIL_LOCK_PTS
+                        if new_sl < sl_p:
+                            current_position['sl_price'] = new_sl
+                            send_telegram(f"🛡️ *Trailing SL Updated (SELL)*\nNew SL Locked: ${new_sl:.2f}")
+
+                    # Check TP / SL Hit
+                    if btc_price <= tp_p:
+                        pnl = qty * (entry_p - tp_p)
+                        ACCOUNT_BALANCE += pnl
+                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
+                        log_to_sheet({"type": "EXIT_TP", "pnl": pnl, "balance": ACCOUNT_BALANCE})
+                        current_position = None
+                    elif btc_price >= sl_p:
+                        loss = qty * (sl_p - entry_p)
+                        ACCOUNT_BALANCE -= loss
+                        zone_sl_count += 1
+                        total_trades_today += 1
+                        send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3")
+                        log_to_sheet({"type": "EXIT_SL", "loss": loss, "balance": ACCOUNT_BALANCE})
+                        current_position = None
+
+                # Zone Shift Evaluation
+                if zone_sl_count >= 3:
+                    current_zone += 1
                     zone_sl_count = 0
+                    if current_zone > 3:
+                        send_telegram(f"⚠️ *Max 9 Trades Limit Reached for Today!* Trading paused until UTC midnight.")
 
-            elif position == 'SELL':
-                if last_row['high'] >= sl_price:
-                    pnl_usd = (entry_price - sl_price) * position_size
-                    balance += pnl_usd
-                    zone_sl_count += 1
-                    daily_trades += 1
-                    send_telegram(
-                        f'🔴 *STOP LOSS HIT (SELL)*\n\n'
-                        f'🎯 *Entry:* ${entry_price:.2f}\n'
-                        f'🔻 *Loss:* ${pnl_usd:.2f}\n'
-                        f'🏁 *Balance:* ${balance:.2f}'
-                    )
-                    log_to_google_sheet(current_time, 'SELL', entry_price, sl_price, entry_price - sl_price, pnl_usd, balance)
-                    position = None
+            # 2. Entry Signal Evaluation (Only if no position & under 9 trade limit)
+            elif total_trades_today < 9:
+                # Analyze Timeframes
+                d_type1, _ = analyze_candle_structure(float(d_klines[-3][1]), float(d_klines[-3][2]), float(d_klines[-3][3]), float(d_klines[-3][4]))
+                d_type2, _ = analyze_candle_structure(float(d_klines[-2][1]), float(d_klines[-2][2]), float(d_klines[-2][3]), float(d_klines[-2][4]))
+                
+                w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
+                m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
-                elif last_row['low'] <= tp_price:
-                    pnl_usd = (entry_price - tp_price) * position_size
-                    balance += pnl_usd
-                    daily_trades += 1
-                    send_telegram(
-                        f'🎯 *TARGET HIT (SELL 1:3)* 🎉\n\n'
-                        f'🎯 *Entry:* ${entry_price:.2f}\n'
-                        f'💰 *Profit:* +${pnl_usd:.2f}\n'
-                        f'🏁 *Balance:* ${balance:.2f}'
-                    )
-                    log_to_google_sheet(current_time, 'SELL', entry_price, tp_price, entry_price - tp_price, pnl_usd, balance)
-                    position = None
-                    zone_sl_count = 0
+                buy_trigger = False
+                sell_trigger = False
+                entry_reason = ""
+                entry_tf = ""
+                ref_price = float(d_klines[-2][4]) # Previous Close Level
 
-            # --- 2. ZONE SHIFT LOGIC ---
-            if zone_sl_count >= 3:
-                if zone_level < 3:
-                    zone_level += 1
-                    zone_sl_count = 0
-                    if trade_side == 'SELL':
-                        marked_level = day_high + pt_buffer
-                    else:
-                        marked_level = day_low - pt_buffer
-                else:
-                    marked_level = None
+                # Buffer Rules Setup (Zone 1)
+                if current_zone == 1:
+                    # Daily 2 Doji Check
+                    if d_type1 == "DOJI" and d_type2 == "DOJI":
+                        if btc_price >= ref_price + 200: 
+                            buy_trigger = True
+                            entry_reason = "2 Consecutive Dojis Breakout"
+                            entry_tf = "Daily (1D)"
+                        elif btc_price <= ref_price - 200: 
+                            sell_trigger = True
+                            entry_reason = "2 Consecutive Dojis Breakout"
+                            entry_tf = "Daily (1D)"
+                    
+                    # Weekly / Monthly Single Doji
+                    elif w_type == "DOJI" or m_type == "DOJI":
+                        if btc_price >= ref_price + 200: 
+                            buy_trigger = True
+                            entry_reason = "Single Doji Breakout"
+                            entry_tf = "Weekly / Monthly"
+                        elif btc_price <= ref_price - 200: 
+                            sell_trigger = True
+                            entry_reason = "Single Doji Breakout"
+                            entry_tf = "Weekly / Monthly"
 
-            # --- 3. ENTRY TRIGGER CHECK ---
-            if position is None and daily_trades < 9:
-                if marked_level is None and zone_level == 1:
-                    if last_row['daily_doji'] or last_row['weekly_strong_bull']:
-                        trade_side = 'BUY'
-                        marked_level = current_price + pt_buffer
-                    elif last_row['daily_doji'] or last_row['weekly_strong_bear']:
-                        trade_side = 'SELL'
-                        marked_level = current_price - pt_buffer
+                    # Strong Candle Setup (Weekly/Monthly)
+                    elif w_type == "STRONG_BULL" or m_type == "STRONG_BULL":
+                        if btc_price >= ref_price + 500: 
+                            buy_trigger = True
+                            entry_reason = "Strong Bullish Breakout"
+                            entry_tf = "Weekly / Monthly"
+                    elif w_type == "STRONG_BEAR" or m_type == "STRONG_BEAR":
+                        if btc_price <= ref_price - 500: 
+                            sell_trigger = True
+                            entry_reason = "Strong Bearish Breakout"
+                            entry_tf = "Weekly / Monthly"
 
-                if marked_level is not None:
-                    atr = last_row['atr']
-                    risk_amount = balance * risk_per_trade
+                    # Dicy Closing Trap Setup (Weekly/Monthly)
+                    elif w_type == "DICY_GREEN" or m_type == "DICY_GREEN":
+                        if btc_price <= ref_price - 500: 
+                            sell_trigger = True # SELL ONLY
+                            entry_reason = "Dicy Green Trap Setup"
+                            entry_tf = "Weekly / Monthly"
+                    elif w_type == "DICY_RED" or m_type == "DICY_RED":
+                        if btc_price >= ref_price + 500: 
+                            buy_trigger = True # BUY ONLY
+                            entry_reason = "Dicy Red Trap Setup"
+                            entry_tf = "Weekly / Monthly"
 
-                    if trade_side == 'BUY' and last_row['high'] >= marked_level:
-                        position = 'BUY'
-                        entry_price = marked_level
-                        sl_price = entry_price - (atr * 1.5)
-                        tp_price = entry_price + ((atr * 1.5) * rr_ratio)
-                        position_size = risk_amount / max(1.0, (entry_price - sl_price))
-                        send_telegram(
-                            f'🚀 *BUY ORDER EXECUTED*\n\n'
-                            f'📍 *Entry:* ${entry_price:.2f}\n'
-                            f'🛑 *SL:* ${sl_price:.2f}\n'
-                            f'🎯 *TP:* ${tp_price:.2f}\n'
-                            f'📍 *Zone:* {zone_level}'
-                        )
+                # Zone 2 & 3: Exact Dynamic Day High / Day Low Breakouts (NO EXTRA BUFFER)
+                elif current_zone in [2, 3]:
+                    if day_high is not None and btc_price >= day_high: 
+                        buy_trigger = True
+                        entry_reason = f"Zone {current_zone} Day High Breakout"
+                        entry_tf = "Intraday"
+                    elif day_low is not None and btc_price <= day_low: 
+                        sell_trigger = True
+                        entry_reason = f"Zone {current_zone} Day Low Breakout"
+                        entry_tf = "Intraday"
 
-                    elif trade_side == 'SELL' and last_row['low'] <= marked_level:
-                        position = 'SELL'
-                        entry_price = marked_level
-                        sl_price = entry_price + (atr * 1.5)
-                        tp_price = entry_price - ((atr * 1.5) * rr_ratio)
-                        position_size = risk_amount / max(1.0, (sl_price - entry_price))
-                        send_telegram(
-                            f'🔻 *SELL ORDER EXECUTED*\n\n'
-                            f'📍 *Entry:* ${entry_price:.2f}\n'
-                            f'🛑 *SL:* ${sl_price:.2f}\n'
-                            f'🎯 *TP:* ${tp_price:.2f}\n'
-                            f'📍 *Zone:* {zone_level}'
-                        )
+                # Execute Trade Entry
+                if buy_trigger or sell_trigger:
+                    side = "BUY" if buy_trigger else "SELL"
+                    risk_amt = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT # 1% Capital Risk
+                    qty = risk_amt / SL_POINTS # Quantity in BTC
 
-            time.sleep(300)
+                    sl = btc_price - SL_POINTS if side == "BUY" else btc_price + SL_POINTS
+                    tp = btc_price + TP_POINTS if side == "BUY" else btc_price - TP_POINTS
+
+                    current_position = {
+                        "side": side,
+                        "entry_price": btc_price,
+                        "sl_price": sl,
+                        "tp_price": tp,
+                        "qty": qty,
+                        "reason": entry_reason,
+                        "timeframe": entry_tf
+                    }
+
+                    # Rich Telegram Alert Message
+                    msg = (f"🚨 *NEW TRADE EXECUTED ({side})*\n\n"
+                           f"📌 *Entry Reason:* {entry_reason}\n"
+                           f"⏱️ *Timeframe:* {entry_tf}\n"
+                           f"📍 *Zone:* Zone {current_zone}\n\n"
+                           f"🎯 *Entry Level:* ${btc_price:.2f}\n"
+                           f"🛑 *Stop Loss (SL):* ${sl:.2f} (200 pts)\n"
+                           f"🎯 *Take Profit (TP):* ${tp:.2f} (1:10 RR)\n\n"
+                           f"💰 *Position Size:* {qty:.4f} BTC\n"
+                           f"💵 *Capital Risk:* ${risk_amt:.2f} (1%)\n"
+                           f"📊 *Account Balance:* ${ACCOUNT_BALANCE:.2f}")
+                    
+                    print(msg)
+                    send_telegram(msg)
+                    log_to_sheet({
+                        "type": f"ENTRY_{side}", 
+                        "reason": entry_reason,
+                        "tf": entry_tf,
+                        "entry": btc_price, 
+                        "sl": sl, 
+                        "tp": tp, 
+                        "zone": current_zone
+                    })
+
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC Price: ${btc_price:.2f} | Position: {current_position['side'] if current_position else 'None'} | Zone: {current_zone}")
+            time.sleep(300) # 5-minute loop
 
         except Exception as e:
-            print(f'⚠️ Error in live paper trading loop: {e}')
-            traceback.print_exc()
-            time.sleep(15)
+            print(f"Loop Error: {e}")
+            time.sleep(10)
 
-if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
-    start_paper_trading()
+if __name__ == "__main__":
+    run_bot()
