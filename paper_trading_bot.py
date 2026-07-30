@@ -17,8 +17,8 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv("8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc", "")
+TELEGRAM_CHAT_ID = os.getenv("1862803975", "")
 SHEET_WEBAPP_URL = os.getenv("SHEET_WEBAPP_URL", "")
 
 ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
