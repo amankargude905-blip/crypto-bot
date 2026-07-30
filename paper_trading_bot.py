@@ -35,6 +35,7 @@ current_position = None  # Dict for active position
 zone_sl_count = 0        # Continuous SL count in current zone (0 to 3)
 current_zone = 1         # Zone 1, Zone 2, Zone 3
 total_strategy_trades = 0 # Persistent SL counter across full setup (Max 9)
+event_finished = False   # Lock flag when Target is hit or Max SLs reached
 
 day_high = None
 day_low = None
@@ -119,7 +120,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 
 def run_bot():
     global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
-    global day_high, day_low, current_day_str
+    global day_high, day_low, current_day_str, event_finished
 
     print("🚀 Aman's Precision Master Strategy Bot Started...")
     send_telegram("🚀 *Master Paper Trading Bot Started Live on Render!*")
@@ -129,7 +130,7 @@ def run_bot():
             now_utc = datetime.now(timezone.utc)
             today_str = now_utc.strftime("%Y-%m-%d")
 
-            # Daily High/Low Reset at UTC midnight (Zone & Trade counts remain persistent)
+            # Daily High/Low Reset at UTC midnight
             if today_str != current_day_str:
                 current_day_str = today_str
                 day_high = None
@@ -141,7 +142,7 @@ def run_bot():
                 time.sleep(10)
                 continue
 
-            # Store Previous High/Low before updating for Zone 2 & 3 evaluations
+            # Store Previous High/Low before updating
             prev_day_high = day_high
             prev_day_low = day_low
 
@@ -170,9 +171,14 @@ def run_bot():
                     if btc_price >= tp_p:
                         pnl = qty * (tp_p - entry_p)
                         ACCOUNT_BALANCE += pnl
-                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
+                        event_finished = True  # EVENT COMPLETE LOCKDOWN
+                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed Successfully! No further trades for this setup.*")
                         log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
+                        current_zone = 1
+                        zone_sl_count = 0
+                        total_strategy_trades = 0
+
                     elif btc_price <= sl_p:
                         loss = qty * (entry_p - sl_p)
                         ACCOUNT_BALANCE -= loss
@@ -194,9 +200,14 @@ def run_bot():
                     if btc_price <= tp_p:
                         pnl = qty * (entry_p - tp_p)
                         ACCOUNT_BALANCE += pnl
-                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
+                        event_finished = True  # EVENT COMPLETE LOCKDOWN
+                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed Successfully! No further trades for this setup.*")
                         log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
+                        current_zone = 1
+                        zone_sl_count = 0
+                        total_strategy_trades = 0
+
                     elif btc_price >= sl_p:
                         loss = qty * (sl_p - entry_p)
                         ACCOUNT_BALANCE -= loss
@@ -213,13 +224,14 @@ def run_bot():
                         zone_sl_count = 0
                         send_telegram(f"⚠️ *Zone Shift Triggered!* Switching to Zone {current_zone}")
                     else:
-                        send_telegram(f"🚨 *All 3 Zones Failed (Total 9 SLs Hit)!* Resetting strategy sequence back to Zone 1.")
+                        send_telegram(f"🚨 *All 3 Zones Failed (Total 9 SLs Hit)!* Event Ended. Resetting sequence.")
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
+                        event_finished = True  # Max attempts done
 
             # 2. Entry Signal Evaluation
-            elif total_strategy_trades < 9:
+            elif not event_finished and total_strategy_trades < 9:
                 d_type1, _ = analyze_candle_structure(float(d_klines[-3][1]), float(d_klines[-3][2]), float(d_klines[-3][3]), float(d_klines[-3][4]))
                 d_type2, _ = analyze_candle_structure(float(d_klines[-2][1]), float(d_klines[-2][2]), float(d_klines[-2][3]), float(d_klines[-2][4]))
                 
@@ -287,8 +299,12 @@ def run_bot():
                         entry_reason = f"Zone {current_zone} Day Low Breakout"
                         entry_tf = "Intraday"
 
-                # Execute Trade Entry
+                # Reset Lockdown Flag If A Fresh Setup Pattern Appears
                 if buy_trigger or sell_trigger:
+                    event_finished = False
+
+                # Execute Trade Entry
+                if (buy_trigger or sell_trigger) and not event_finished:
                     side = "BUY" if buy_trigger else "SELL"
                     risk_amt = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
                     qty = risk_amt / SL_POINTS
@@ -329,7 +345,7 @@ def run_bot():
                         "zone": current_zone
                     })
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC Price: ${btc_price:.2f} | Position: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Trades: {total_strategy_trades}/9")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC Price: ${btc_price:.2f} | Position: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Trades: {total_strategy_trades}/9 | Event Done: {event_finished}")
             time.sleep(300)
 
         except Exception as e:
