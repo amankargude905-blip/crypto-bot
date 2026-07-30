@@ -1,7 +1,20 @@
 import os
 import time
 import requests
+import threading
+from flask import Flask
 from datetime import datetime, timezone
+
+# --- FLASK SERVER FOR RENDER PORT BINDING ---
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Aman's Master Precision Bot is Active and Running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -325,5 +338,7 @@ def run_bot():
             time.sleep(10)
 
 if __name__ == "__main__":
+    # Start Flask Web Server in background thread for Render Port Scan
+    threading.Thread(target=run_flask, daemon=True).start()
+    # Start Bot Strategy Engine
     run_bot()
-    
