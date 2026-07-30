@@ -17,9 +17,10 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
-TELEGRAM_BOT_TOKEN = os.getenv("8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc", "")
-TELEGRAM_CHAT_ID = os.getenv("1862803975", "")
-SHEET_WEBAPP_URL = os.getenv("SHEET_WEBAPP_URL", "")
+# --- CONFIGURATION & ENV VARS ---
+TELEGRAM_BOT_TOKEN = "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc"
+TELEGRAM_CHAT_ID = "1862803975"
+SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzQHhdk3UH4vZStrRuIuHI4K4V9FGbj6R3UqpPNBXmHTv3CIf9P4jS3393G_32sapfolQ/exec"
 
 ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
 RISK_PER_TRADE_PCT = 0.01  # 1% Risk per trade
