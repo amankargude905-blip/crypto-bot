@@ -17,7 +17,6 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
-# --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc"
 TELEGRAM_CHAT_ID = "1862803975"
 SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzQHhdk3UH4vZStrRuIuHI4K4V9FGbj6R3UqpPNBXmHTv3CIf9P4jS3393G_32sapfolQ/exec"
@@ -33,9 +32,9 @@ TRAIL_LOCK_PTS = 600.0
 
 # State Tracking
 current_position = None  # Dict for active position
-zone_sl_count = 0        # Continuous SL count (0 to 3)
+zone_sl_count = 0        # Continuous SL count in current zone (0 to 3)
 current_zone = 1         # Zone 1, Zone 2, Zone 3
-total_trades_today = 0   # Max 9 trades limit
+total_strategy_trades = 0 # Persistent SL counter across full setup (Max 9)
 
 day_high = None
 day_low = None
@@ -119,7 +118,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
     return "NORMAL", body_pct
 
 def run_bot():
-    global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_trades_today
+    global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
     global day_high, day_low, current_day_str
 
     print("🚀 Aman's Precision Master Strategy Bot Started...")
@@ -130,15 +129,12 @@ def run_bot():
             now_utc = datetime.now(timezone.utc)
             today_str = now_utc.strftime("%Y-%m-%d")
 
-            # Daily Reset at UTC midnight
+            # Daily High/Low Reset at UTC midnight (Zone & Trade counts remain persistent)
             if today_str != current_day_str:
                 current_day_str = today_str
                 day_high = None
                 day_low = None
-                zone_sl_count = 0
-                current_zone = 1
-                total_trades_today = 0
-                print(f"🔄 New UTC Day Reset: {current_day_str}")
+                print(f"🔄 New UTC Day Reset (Price High/Low Reset Only): {current_day_str}")
 
             btc_price, d_klines, w_klines, m_klines = fetch_btc_data()
             if btc_price is None or not d_klines or not w_klines or not m_klines:
@@ -181,8 +177,8 @@ def run_bot():
                         loss = qty * (entry_p - sl_p)
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
-                        total_trades_today += 1
-                        send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3")
+                        total_strategy_trades += 1
+                        send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         log_to_sheet({"type": "EXIT_SL", "loss": round(loss, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
 
@@ -205,20 +201,25 @@ def run_bot():
                         loss = qty * (sl_p - entry_p)
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
-                        total_trades_today += 1
-                        send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3")
+                        total_strategy_trades += 1
+                        send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         log_to_sheet({"type": "EXIT_SL", "loss": round(loss, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
 
-                # Zone Shift Evaluation
+                # Persistent Zone Transition & Setup Reset Logic
                 if zone_sl_count >= 3:
-                    current_zone += 1
-                    zone_sl_count = 0
-                    if current_zone > 3:
-                        send_telegram(f"⚠️ *Max 9 Trades Limit Reached for Today!* Trading paused until UTC midnight.")
+                    if current_zone < 3:
+                        current_zone += 1
+                        zone_sl_count = 0
+                        send_telegram(f"⚠️ *Zone Shift Triggered!* Switching to Zone {current_zone}")
+                    else:
+                        send_telegram(f"🚨 *All 3 Zones Failed (Total 9 SLs Hit)!* Resetting strategy sequence back to Zone 1.")
+                        current_zone = 1
+                        zone_sl_count = 0
+                        total_strategy_trades = 0
 
             # 2. Entry Signal Evaluation
-            elif total_trades_today < 9:
+            elif total_strategy_trades < 9:
                 d_type1, _ = analyze_candle_structure(float(d_klines[-3][1]), float(d_klines[-3][2]), float(d_klines[-3][3]), float(d_klines[-3][4]))
                 d_type2, _ = analyze_candle_structure(float(d_klines[-2][1]), float(d_klines[-2][2]), float(d_klines[-2][3]), float(d_klines[-2][4]))
                 
@@ -328,7 +329,7 @@ def run_bot():
                         "zone": current_zone
                     })
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC Price: ${btc_price:.2f} | Position: {current_position['side'] if current_position else 'None'} | Zone: {current_zone}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] BTC Price: ${btc_price:.2f} | Position: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Trades: {total_strategy_trades}/9")
             time.sleep(300)
 
         except Exception as e:
