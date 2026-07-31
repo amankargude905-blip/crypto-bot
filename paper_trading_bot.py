@@ -19,7 +19,7 @@ def run_flask():
 # --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc"
 TELEGRAM_CHAT_ID = "1862803975"
-SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzQHhdk3UH4vZStrRuIuHI4K4V9FGbj6R3UqpPNBXmHTv3CIf9P4jS3393G_32sapfolQ/exec"
+SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzm_e4UDRAHtdj8kg43DafVIlF4cJj-Ck18i4C1iemqg38s-1Br9qf5fBUXX8g4DmN9Qg/exec"
 
 ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
 FIXED_RISK_USD = 100.0     # Fixed $100 Risk per trade (Replaces 1% Dynamic Risk)
