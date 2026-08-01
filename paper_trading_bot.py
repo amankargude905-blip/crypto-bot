@@ -22,7 +22,7 @@ TELEGRAM_CHAT_ID = "1862803975"
 SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyqIGGfw908exF7TIQ0qWAjf7jT1iukly4VsalYTfqGCVEdaM_4FkNORQ-ha19ysnOKwQ/exec"
 
 ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
-FIXED_RISK_USD = 100.0     # Fixed $100 Risk per trade (Replaces 1% Dynamic Risk)
+FIXED_RISK_USD = 100.0     # Fixed $100 Risk per trade
 SL_POINTS = 200.0          # Fixed 200 Points SL
 TP_POINTS = 2000.0         # Fixed 1:10 RR Target (2000 Points)
 
@@ -32,10 +32,11 @@ TRAIL_LOCK_PTS = 600.0
 
 # State Tracking
 current_position = None     # Dict for active position
-zone_sl_count = 0           # Continuous SL count in current zone (0 to 3)
+zone_sl_count = 0            # Continuous SL count in current zone (0 to 3)
 current_zone = 1            # Zone 1, Zone 2, Zone 3
 total_strategy_trades = 0   # Persistent SL counter across full setup (Max 9)
 event_finished = False      # Lock flag: Lockdown on TP or Max 9 SLs
+INITIALIZED = False         # Warmup guard for fresh deploy/restarts
 
 # Tracking HTF Event IDs to detect NEW Events
 last_processed_event_id = None 
@@ -114,6 +115,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
     close_pct_from_low = ((close_p - low_p) / total_range) * 100
     close_pct_from_high = ((high_p - close_p) / total_range) * 100
 
+    # RESTORED: Original 25% threshold as verified from image analysis
     if body_pct <= 25.0:
         return "DOJI", body_pct
     elif body_pct >= 80.0:
@@ -127,7 +129,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 
 def run_bot():
     global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
-    global day_high, day_low, current_day_str, event_finished
+    global day_high, day_low, current_day_str, event_finished, INITIALIZED
     global last_processed_event_id, last_trade_candle_time, last_trade_price
 
     print("🚀 Aman's Precision Master Strategy Bot Started...")
@@ -155,6 +157,16 @@ def run_bot():
             day_high = btc_price if day_high is None else max(day_high, btc_price)
             day_low = btc_price if day_low is None else min(day_low, btc_price)
 
+            current_event_id = f"{d_klines[-2][0]}_{w_klines[-2][0]}_{m_klines[-2][0]}"
+
+            # FRESH DEPLOY / RESTART GUARD (Silent Warmup Phase)
+            if not INITIALIZED:
+                print("🔄 System Initializing/Redeployed. Syncing HTF Event ID without triggering trades...")
+                last_processed_event_id = current_event_id
+                INITIALIZED = True
+                time.sleep(10)
+                continue
+
             # --- 1. ACTIVE POSITION MANAGEMENT ---
             if current_position is not None:
                 side = current_position['side']
@@ -172,11 +184,11 @@ def run_bot():
                             current_position['sl_price'] = new_sl
                             send_telegram(f"🛡️ *Trailing SL Updated (BUY)*\nNew SL Locked: ${new_sl:.2f}")
 
-                    # TP Hit (Event Lockdown Trigger)
+                    # TP Hit
                     if btc_price >= tp_p:
                         pnl = qty * (tp_p - entry_p)
                         ACCOUNT_BALANCE += pnl
-                        event_finished = True  # STRICT LOCKDOWN
+                        event_finished = True  
                         send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
                         log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
@@ -202,11 +214,11 @@ def run_bot():
                             current_position['sl_price'] = new_sl
                             send_telegram(f"🛡️ *Trailing SL Updated (SELL)*\nNew SL Locked: ${new_sl:.2f}")
 
-                    # TP Hit (Event Lockdown Trigger)
+                    # TP Hit
                     if btc_price <= tp_p:
                         pnl = qty * (entry_p - tp_p)
                         ACCOUNT_BALANCE += pnl
-                        event_finished = True  # STRICT LOCKDOWN
+                        event_finished = True  
                         send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
                         log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
@@ -224,7 +236,7 @@ def run_bot():
                         log_to_sheet({"type": "EXIT_SL", "loss": round(loss, 2), "balance": round(ACCOUNT_BALANCE, 2)})
                         current_position = None
 
-                # Zone & Max Trade Transition Checks
+                # Zone Transition Checks
                 if zone_sl_count >= 3:
                     if current_zone < 3:
                         current_zone += 1
@@ -245,10 +257,7 @@ def run_bot():
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
-                # Current Event Identifier (Combination of latest Daily/Weekly close timestamps)
-                current_event_id = f"{d_klines[-2][0]}_{w_klines[-2][0]}_{m_klines[-2][0]}"
-
-                # Unlocking mechanism: Unlock ONLY if a new HTF Candle/Event Close is detected
+                # Event Unlock Check
                 if event_finished and current_event_id != last_processed_event_id:
                     event_finished = False
                     total_strategy_trades = 0
@@ -256,7 +265,7 @@ def run_bot():
                     zone_sl_count = 0
                     send_telegram(f"🔓 *New HTF Event Detected! Event Lockdown Lifted.*")
 
-                # If lockdown is still active, skip entry evaluation
+                # Strategy Scan Phase
                 if not event_finished and total_strategy_trades < 9:
                     buy_trigger = False
                     sell_trigger = False
@@ -264,8 +273,9 @@ def run_bot():
                     entry_tf = ""
                     ref_price = float(d_klines[-2][4])
 
-                    # Zone 1 Entry Rules
+                    # Zone 1 Entry Rules (Strict Execution Order)
                     if current_zone == 1:
+                        # Priority 1: Daily 2-Doji Setup
                         if d_type1 == "DOJI" and d_type2 == "DOJI":
                             if btc_price >= ref_price + 200: 
                                 buy_trigger = True
@@ -276,6 +286,7 @@ def run_bot():
                                 entry_reason = "2 Consecutive Dojis Breakout"
                                 entry_tf = "Daily (1D)"
                         
+                        # Priority 2: Weekly / Monthly Single Doji
                         elif w_type == "DOJI" or m_type == "DOJI":
                             if btc_price >= ref_price + 200: 
                                 buy_trigger = True
@@ -286,6 +297,7 @@ def run_bot():
                                 entry_reason = "Single Doji Breakout"
                                 entry_tf = "Weekly / Monthly"
 
+                        # Priority 3: Momentum Breakouts
                         elif w_type == "STRONG_BULL" or m_type == "STRONG_BULL":
                             if btc_price >= ref_price + 500: 
                                 buy_trigger = True
@@ -297,6 +309,7 @@ def run_bot():
                                 entry_reason = "Strong Bearish Breakout"
                                 entry_tf = "Weekly / Monthly"
 
+                        # Priority 4: Trap Setups
                         elif w_type == "DICY_GREEN" or m_type == "DICY_GREEN":
                             if btc_price <= ref_price - 500: 
                                 sell_trigger = True
@@ -319,15 +332,14 @@ def run_bot():
                             entry_reason = f"Zone {current_zone} Day Low Breakout"
                             entry_tf = "Intraday"
 
-                    # Re-entry Loop Protection Guard
+                    # Re-entry Guard
                     is_same_candle = (candle_time == last_trade_candle_time)
                     is_same_level = (last_trade_price is not None and abs(btc_price - last_trade_price) < 50.0)
 
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        # Fixed $ Risk Sizing
-                        qty = FIXED_RISK_USD / SL_POINTS  # 100 / 200 = 0.50 BTC
+                        qty = FIXED_RISK_USD / SL_POINTS  # $100 / 200 = 0.5 BTC
 
                         sl = btc_price - SL_POINTS if side == "BUY" else btc_price + SL_POINTS
                         tp = btc_price + TP_POINTS if side == "BUY" else btc_price - TP_POINTS
