@@ -112,24 +112,20 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
     body = abs(close_p - open_p)
     body_pct = (body / total_range) * 100
 
-    # Upper/Lower Wick Rejections %
+    # Upper and Lower Wick Percentages
     upper_wick_pct = ((high_p - max(open_p, close_p)) / total_range) * 100
     lower_wick_pct = ((min(open_p, close_p) - low_p) / total_range) * 100
 
-    # Relative Positions from Candle Low (%)
-    open_pos_pct = ((open_p - low_p) / total_range) * 100
-    close_pos_pct = ((close_p - low_p) / total_range) * 100
-
-    # 1. DICY GREEN: Upper Wick > 30% AND Close is > 50% above Open (Green body)
-    if upper_wick_pct > 30.0 and close_p > open_p and close_pos_pct > (open_pos_pct + 50.0):
+    # 1. DICY GREEN (Upper Wick >= 30% & Green Body)
+    if upper_wick_pct >= 30.0 and close_p > open_p:
         return "DICY_GREEN", upper_wick_pct
 
-    # 2. DICY RED: Lower Wick > 30% AND Close is > 50% below Open (Red body)
-    elif lower_wick_pct > 30.0 and close_p < open_p and close_pos_pct < (open_pos_pct - 50.0):
+    # 2. DICY RED (Lower Wick >= 30% & Red Body)
+    elif lower_wick_pct >= 30.0 and close_p < open_p:
         return "DICY_RED", lower_wick_pct
 
-    # 3. DOJI CHECK (25.0% For All Timeframes)
-    if body_pct <= 25.0:
+    # 3. TRUE DOJI (Both side wicks >= 25% and Small Body <= 20%)
+    elif body_pct <= 20.0 and upper_wick_pct >= 25.0 and lower_wick_pct >= 25.0:
         return "DOJI", body_pct
 
     # 4. MOMENTUM CANDLE
