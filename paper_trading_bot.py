@@ -21,10 +21,10 @@ TELEGRAM_BOT_TOKEN = "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc"
 TELEGRAM_CHAT_ID = "1862803975"
 SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyqIGGfw908exF7TIQ0qWAjf7jT1iukly4VsalYTfqGCVEdaM_4FkNORQ-ha19ysnOKwQ/exec"
 
-ACCOUNT_BALANCE = 10000.0  # Initial Paper Trading Capital ($)
-FIXED_RISK_USD = 100.0     # Fixed $100 Risk per trade
-SL_POINTS = 200.0          # Fixed 200 Points SL
-TP_POINTS = 2000.0         # Fixed 1:10 RR Target (2000 Points)
+ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
+FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
+SL_POINTS = 200.0           # Fixed 200 Points SL
+TP_POINTS = 2000.0          # Fixed 1:10 RR Target (2000 Points)
 
 # Trailing Config
 TRAIL_TRIGGER_PTS = 1600.0
@@ -32,7 +32,7 @@ TRAIL_LOCK_PTS = 600.0
 
 # State Tracking
 current_position = None     # Dict for active position
-zone_sl_count = 0            # Continuous SL count in current zone (0 to 3)
+zone_sl_count = 0           # Continuous SL count in current zone (0 to 3)
 current_zone = 1            # Zone 1, Zone 2, Zone 3
 total_strategy_trades = 0   # Persistent SL counter across full setup (Max 9)
 event_finished = False      # Lock flag: Lockdown on TP or Max 9 SLs
