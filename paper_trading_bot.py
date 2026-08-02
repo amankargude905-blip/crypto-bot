@@ -256,7 +256,24 @@ def run_bot():
                 d_type2, _ = analyze_candle_structure(float(d_klines[-2][1]), float(d_klines[-2][2]), float(d_klines[-2][3]), float(d_klines[-2][4]))
                 
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
-                m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
+                
+                m_open = float(m_klines[-2][1])
+                m_type, _ = analyze_candle_structure(m_open, float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
+
+                # --- 3000-POINT INVALIDATION CHECK FOR MONTHLY DICY CANDLES ---
+                m_invalidated = False
+                if m_type == "DICY_GREEN" and btc_price >= (m_open + 3000.0):
+                    m_invalidated = True
+                    send_telegram(f"🚨 *Monthly Dicy Green Invalidated!* Price moved +3000 pts above Monthly Open (${m_open:.2f}). Unlocking scanning...")
+                elif m_type == "DICY_RED" and btc_price <= (m_open - 3000.0):
+                    m_invalidated = True
+                    send_telegram(f"🚨 *Monthly Dicy Red Invalidated!* Price moved -3000 pts below Monthly Open (${m_open:.2f}). Unlocking scanning...")
+
+                if m_invalidated:
+                    event_finished = False
+                    current_zone = 1
+                    zone_sl_count = 0
+                    total_strategy_trades = 0
 
                 if event_finished and current_event_id != last_processed_event_id:
                     event_finished = False
@@ -307,17 +324,19 @@ def run_bot():
                                 entry_reason = "Strong Bearish Breakout"
                                 entry_tf = "Weekly / Monthly"
 
-                        # Priority 4: Trap Setups (Dicy Green / Dicy Red)
-                        elif w_type == "DICY_GREEN" or m_type == "DICY_GREEN":
-                            if btc_price <= ref_price - 500: 
-                                sell_trigger = True
-                                entry_reason = "Dicy Green Trap Setup"
-                                entry_tf = "Weekly / Monthly"
-                        elif w_type == "DICY_RED" or m_type == "DICY_RED":
-                            if btc_price >= ref_price + 500: 
-                                buy_trigger = True
-                                entry_reason = "Dicy Red Trap Setup"
-                                entry_tf = "Weekly / Monthly"
+                        # Priority 4: Trap Setups (Filter out Invalidated Monthly Setups)
+                        else:
+                            if w_type == "DICY_GREEN" or (m_type == "DICY_GREEN" and not m_invalidated):
+                                if btc_price <= ref_price - 500: 
+                                    sell_trigger = True
+                                    entry_reason = "Dicy Green Trap Setup"
+                                    entry_tf = "Weekly / Monthly"
+                            
+                            if not sell_trigger and (w_type == "DICY_RED" or (m_type == "DICY_RED" and not m_invalidated)):
+                                if btc_price >= ref_price + 500: 
+                                    buy_trigger = True
+                                    entry_reason = "Dicy Red Trap Setup"
+                                    entry_tf = "Weekly / Monthly"
 
                     elif current_zone in [2, 3]:
                         if prev_day_high is not None and btc_price >= prev_day_high: 
