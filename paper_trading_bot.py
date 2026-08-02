@@ -19,7 +19,7 @@ def run_flask():
 # --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc"
 TELEGRAM_CHAT_ID = "1862803975"
-SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyqIGGfw908exF7TIQ0qWAjf7jT1iukly4VsalYTfqGCVEdaM_4FkNORQ-ha19ysnOKwQ/exec"
+SHEET_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIWgXajnYyz9j-ZloFiIy8RxQfIBZnNw/exec"
 
 ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
 FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
@@ -196,7 +196,18 @@ def run_bot():
                         ACCOUNT_BALANCE += pnl
                         event_finished = True  
                         send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
-                        log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
+                        
+                        # --- UPDATED GOOGLE SHEET LOGGING ---
+                        log_to_sheet({
+                            "script": "BTCUSDT",
+                            "type": "EXIT_TP",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": TP_POINTS,
+                            "pnl_usd": round(pnl, 2),
+                            "exit_reason": "Target Hit (1:10)",
+                            "balance": round(ACCOUNT_BALANCE, 2)
+                        })
+
                         current_position = None
                         current_zone = 1
                         zone_sl_count = 0
@@ -208,7 +219,18 @@ def run_bot():
                         zone_sl_count += 1
                         total_strategy_trades += 1
                         send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
-                        log_to_sheet({"type": "EXIT_SL", "loss": round(loss, 2), "balance": round(ACCOUNT_BALANCE, 2)})
+                        
+                        # --- UPDATED GOOGLE SHEET LOGGING ---
+                        log_to_sheet({
+                            "script": "BTCUSDT",
+                            "type": "EXIT_SL",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": -SL_POINTS,
+                            "pnl_usd": -round(loss, 2),
+                            "exit_reason": "Stop Loss Hit",
+                            "balance": round(ACCOUNT_BALANCE, 2)
+                        })
+
                         current_position = None
 
                 elif side == 'SELL':
@@ -224,7 +246,18 @@ def run_bot():
                         ACCOUNT_BALANCE += pnl
                         event_finished = True  
                         send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
-                        log_to_sheet({"type": "EXIT_TP", "pnl": round(pnl, 2), "balance": round(ACCOUNT_BALANCE, 2)})
+                        
+                        # --- UPDATED GOOGLE SHEET LOGGING ---
+                        log_to_sheet({
+                            "script": "BTCUSDT",
+                            "type": "EXIT_TP",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": TP_POINTS,
+                            "pnl_usd": round(pnl, 2),
+                            "exit_reason": "Target Hit (1:10)",
+                            "balance": round(ACCOUNT_BALANCE, 2)
+                        })
+
                         current_position = None
                         current_zone = 1
                         zone_sl_count = 0
@@ -236,7 +269,18 @@ def run_bot():
                         zone_sl_count += 1
                         total_strategy_trades += 1
                         send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
-                        log_to_sheet({"type": "EXIT_SL", "loss": round(loss, 2), "balance": round(ACCOUNT_BALANCE, 2)})
+                        
+                        # --- UPDATED GOOGLE SHEET LOGGING ---
+                        log_to_sheet({
+                            "script": "BTCUSDT",
+                            "type": "EXIT_SL",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": -SL_POINTS,
+                            "pnl_usd": -round(loss, 2),
+                            "exit_reason": "Stop Loss Hit",
+                            "balance": round(ACCOUNT_BALANCE, 2)
+                        })
+
                         current_position = None
 
                 if zone_sl_count >= 3:
@@ -394,14 +438,16 @@ def run_bot():
                         
                         print(msg)
                         send_telegram(msg)
+                        
+                        # --- UPDATED GOOGLE SHEET LOGGING ---
                         log_to_sheet({
-                            "type": f"ENTRY_{side}", 
+                            "script": "BTCUSDT",
+                            "type": f"ENTRY_{side}",
                             "reason": entry_reason,
-                            "tf": entry_tf,
-                            "entry": round(btc_price, 2), 
-                            "sl": round(sl, 2), 
-                            "tp": round(tp, 2), 
-                            "zone": current_zone
+                            "entry": round(btc_price, 2),
+                            "risk": FIXED_RISK_USD,
+                            "rr": "1:10",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Trades: {total_strategy_trades}/9 | Event Locked: {event_finished}")
