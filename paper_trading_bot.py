@@ -283,8 +283,11 @@ def run_bot():
 
             # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
             else:
-                d_type1, _ = analyze_candle_structure(float(d_klines[-3][1]), float(d_klines[-3][2]), float(d_klines[-3][3]), float(d_klines[-3][4]))
-                d_type2, _ = analyze_candle_structure(float(d_klines[-2][1]), float(d_klines[-2][2]), float(d_klines[-2][3]), float(d_klines[-2][4]))
+                # NEW LOGIC: Calculate Closing Distance of last 2 completed daily candles
+                day1_close = float(d_klines[-3][4])  # 2 days ago Close
+                day2_close = float(d_klines[-2][4])  # 1 day ago Close
+                daily_close_distance = abs(day1_close - day2_close)
+
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 
                 m_open = float(m_klines[-1][1])
@@ -292,7 +295,9 @@ def run_bot():
 
                 # Current Candle Context Identification
                 current_detected_setup = None
-                if d_type1 == "DOJI" and d_type2 == "DOJI":
+                
+                # Check 2 Daily Close Distance <= 300 pts
+                if daily_close_distance <= 300.0:
                     current_detected_setup = "2_DOJI"
                 elif w_type == "DOJI" or m_type == "DOJI":
                     current_detected_setup = "SINGLE_DOJI"
@@ -347,11 +352,11 @@ def run_bot():
                         if current_detected_setup == "2_DOJI":
                             if btc_price >= ref_price + 200: 
                                 buy_trigger = True
-                                entry_reason = "Zone 1: 2 Consecutive Dojis Breakout"
+                                entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
                                 entry_tf = "Daily (1D)"
                             elif btc_price <= ref_price - 200: 
                                 sell_trigger = True
-                                entry_reason = "Zone 1: 2 Consecutive Dojis Breakout"
+                                entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
                                 entry_tf = "Daily (1D)"
                         
                         elif current_detected_setup == "SINGLE_DOJI":
