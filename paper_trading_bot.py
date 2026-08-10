@@ -35,12 +35,16 @@ current_position = None     # Dict for active position
 zone_sl_count = 0           # Continuous SL count in current zone (0 to 3)
 current_zone = 1            # Zone 1, Zone 2, Zone 3
 total_strategy_trades = 0   # Persistent SL counter across full setup (Max 9)
-active_setup_type = None    # Track active setup type (e.g., DICY_GREEN, DICY_RED, DOJI)
-event_finished = False      # Lock flag: Lockdown on TP or Max 9 SLs
+active_setup_type = None    # Track active setup type
+event_finished = False      # Lock flag: Lockdown on Max 9 SLs
 INITIALIZED = False         # Warmup guard for fresh deploy/restarts
 m_invalid_alert_sent = False # Prevention for Telegram spamming on Monthly Invalidation
 
-# EVENT SPECIFIC HIGH/LOW TRACKING (REPLACES DAY HIGH/LOW)
+# FOLLOW-THROUGH SPECIFIC TRACKING
+last_tp_hit_price = None
+follow_through_direction = None
+
+# EVENT SPECIFIC HIGH/LOW TRACKING
 event_high = None
 event_low = None
 
@@ -131,18 +135,21 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 def reset_event_state():
     """Helper to reset zone states and event tracking limits"""
     global current_zone, zone_sl_count, total_strategy_trades, active_setup_type
-    global event_high, event_low
+    global event_high, event_low, last_tp_hit_price, follow_through_direction
     current_zone = 1
     zone_sl_count = 0
     total_strategy_trades = 0
     active_setup_type = None
     event_high = None
     event_low = None
+    last_tp_hit_price = None
+    follow_through_direction = None
 
 def run_bot():
     global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
     global event_high, event_low, event_finished, INITIALIZED, m_invalid_alert_sent
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
+    global last_tp_hit_price, follow_through_direction
 
     print("🚀 Aman's Precision Master Strategy Bot Started...")
     send_telegram("🚀 *Master Paper Trading Bot Started Live on Render!*")
@@ -189,8 +196,12 @@ def run_bot():
                     if btc_price >= tp_p:
                         pnl = qty * (tp_p - entry_p)
                         ACCOUNT_BALANCE += pnl
-                        event_finished = True  
-                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
+                        
+                        # Prepare Follow-Through Tracking
+                        last_tp_hit_price = tp_p
+                        follow_through_direction = "BUY"
+                        
+                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Target Hit! Standing by for Follow-Through Entry (+200 pts).*")
                         
                         log_to_sheet({
                             "script": "BTCUSDT",
@@ -203,13 +214,21 @@ def run_bot():
                         })
 
                         current_position = None
-                        reset_event_state()
+                        # Reset zone limits for fresh 3-zone system on follow-through
+                        current_zone = 1
+                        zone_sl_count = 0
+                        total_strategy_trades = 0
 
                     elif btc_price <= sl_p:
                         loss = qty * (entry_p - sl_p)
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
                         total_strategy_trades += 1
+                        
+                        # Cancel follow-through if SL hits on ongoing trade
+                        last_tp_hit_price = None
+                        follow_through_direction = None
+
                         send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         
                         log_to_sheet({
@@ -235,8 +254,12 @@ def run_bot():
                     if btc_price <= tp_p:
                         pnl = qty * (entry_p - tp_p)
                         ACCOUNT_BALANCE += pnl
-                        event_finished = True  
-                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🔒 *Event Completed & Locked! Waiting for Next HTF Event.*")
+
+                        # Prepare Follow-Through Tracking
+                        last_tp_hit_price = tp_p
+                        follow_through_direction = "SELL"
+
+                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Target Hit! Standing by for Follow-Through Entry (-200 pts).*")
                         
                         log_to_sheet({
                             "script": "BTCUSDT",
@@ -249,13 +272,21 @@ def run_bot():
                         })
 
                         current_position = None
-                        reset_event_state()
+                        # Reset zone limits for fresh 3-zone system on follow-through
+                        current_zone = 1
+                        zone_sl_count = 0
+                        total_strategy_trades = 0
 
                     elif btc_price >= sl_p:
                         loss = qty * (sl_p - entry_p)
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
                         total_strategy_trades += 1
+
+                        # Cancel follow-through if SL hits
+                        last_tp_hit_price = None
+                        follow_through_direction = None
+
                         send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         
                         log_to_sheet({
@@ -283,14 +314,21 @@ def run_bot():
 
             # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
             else:
-                # NEW LOGIC: Calculate Closing Distance of last 2 completed daily candles
                 day1_close = float(d_klines[-3][4])  # 2 days ago Close
                 day2_close = float(d_klines[-2][4])  # 1 day ago Close
                 daily_close_distance = abs(day1_close - day2_close)
 
-                w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
-                
+                # HTF Open-Close Distance Logic for Weekly & Monthly Doji
+                w_open = float(w_klines[-2][1])
+                w_close = float(w_klines[-2][4])
+                weekly_dist = abs(w_open - w_close)
+
                 m_open = float(m_klines[-1][1])
+                m_prev_open = float(m_klines[-2][1])
+                m_prev_close = float(m_klines[-2][4])
+                monthly_dist = abs(m_prev_open - m_prev_close)
+
+                w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
                 # Current Candle Context Identification
@@ -299,8 +337,10 @@ def run_bot():
                 # Check 2 Daily Close Distance <= 300 pts
                 if daily_close_distance <= 300.0:
                     current_detected_setup = "2_DOJI"
-                elif w_type == "DOJI" or m_type == "DOJI":
-                    current_detected_setup = "SINGLE_DOJI"
+                elif weekly_dist <= 1200.0:
+                    current_detected_setup = "WEEKLY_DOJI"
+                elif monthly_dist <= 2000.0:
+                    current_detected_setup = "MONTHLY_DOJI"
                 elif w_type == "STRONG_BULL" or m_type == "STRONG_BULL":
                     current_detected_setup = "STRONG_BULL"
                 elif w_type == "STRONG_BEAR" or m_type == "STRONG_BEAR":
@@ -347,62 +387,85 @@ def run_bot():
                     entry_tf = ""
                     ref_price = float(d_klines[-2][4])
 
-                    # --- ZONE 1: INITIAL STRATEGY CALCULATED LEVEL ---
-                    if current_zone == 1:
-                        if current_detected_setup == "2_DOJI":
-                            if btc_price >= ref_price + 200: 
-                                buy_trigger = True
-                                entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
-                                entry_tf = "Daily (1D)"
-                            elif btc_price <= ref_price - 200: 
-                                sell_trigger = True
-                                entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
-                                entry_tf = "Daily (1D)"
-                        
-                        elif current_detected_setup == "SINGLE_DOJI":
-                            if btc_price >= ref_price + 200: 
-                                buy_trigger = True
-                                entry_reason = "Zone 1: Single Doji Breakout"
-                                entry_tf = "Weekly / Monthly"
-                            elif btc_price <= ref_price - 200: 
-                                sell_trigger = True
-                                entry_reason = "Zone 1: Single Doji Breakout"
-                                entry_tf = "Weekly / Monthly"
-
-                        elif current_detected_setup == "STRONG_BULL":
-                            if btc_price >= ref_price + 500: 
-                                buy_trigger = True
-                                entry_reason = "Zone 1: Strong Bullish Breakout"
-                                entry_tf = "Weekly / Monthly"
-
-                        elif current_detected_setup == "STRONG_BEAR":
-                            if btc_price <= ref_price - 500: 
-                                sell_trigger = True
-                                entry_reason = "Zone 1: Strong Bearish Breakout"
-                                entry_tf = "Weekly / Monthly"
-
-                        elif current_detected_setup == "DICY_GREEN" and not m_invalidated:
-                            if btc_price <= ref_price - 500: 
-                                sell_trigger = True
-                                entry_reason = "Zone 1: Dicy Green Trap Setup"
-                                entry_tf = "Weekly / Monthly"
-                        
-                        elif current_detected_setup == "DICY_RED" and not m_invalidated:
-                            if btc_price >= ref_price + 500: 
-                                buy_trigger = True
-                                entry_reason = "Zone 1: Dicy Red Trap Setup"
-                                entry_tf = "Weekly / Monthly"
-
-                    # --- ZONE 2 & ZONE 3: DYNAMIC EVENT HIGH / LOW SHIFTS ---
-                    elif current_zone in [2, 3]:
-                        if prev_event_high is not None and btc_price >= prev_event_high: 
+                    # --- FOLLOW-THROUGH LOGIC EVALUATION ---
+                    if last_tp_hit_price is not None and follow_through_direction is not None:
+                        if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
                             buy_trigger = True
-                            entry_reason = f"Zone {current_zone}: Event High Breakout (${prev_event_high:.2f})"
-                            entry_tf = f"Zone {current_zone} Event High"
-                        elif prev_event_low is not None and btc_price <= prev_event_low: 
+                            entry_reason = f"Follow-Through BUY Breakout (+200 pts above Prev TP ${last_tp_hit_price:.2f})"
+                            entry_tf = "Trend Continuation"
+                        elif follow_through_direction == "SELL" and btc_price <= (last_tp_hit_price - 200.0):
                             sell_trigger = True
-                            entry_reason = f"Zone {current_zone}: Event Low Breakout (${prev_event_low:.2f})"
-                            entry_tf = f"Zone {current_zone} Event Low"
+                            entry_reason = f"Follow-Through SELL Breakout (-200 pts below Prev TP ${last_tp_hit_price:.2f})"
+                            entry_tf = "Trend Continuation"
+
+                    # --- STANDARD ENTRY LOGIC (IF NO FOLLOW-THROUGH ACTIVE) ---
+                    if not buy_trigger and not sell_trigger:
+                        # --- ZONE 1: INITIAL STRATEGY CALCULATED LEVEL ---
+                        if current_zone == 1:
+                            if current_detected_setup == "2_DOJI":
+                                if btc_price >= ref_price + 200: 
+                                    buy_trigger = True
+                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
+                                    entry_tf = "Daily (1D)"
+                                elif btc_price <= ref_price - 200: 
+                                    sell_trigger = True
+                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
+                                    entry_tf = "Daily (1D)"
+                            
+                            elif current_detected_setup == "WEEKLY_DOJI":
+                                if btc_price >= ref_price + 500: 
+                                    buy_trigger = True
+                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
+                                    entry_tf = "Weekly (1W)"
+                                elif btc_price <= ref_price - 500: 
+                                    sell_trigger = True
+                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
+                                    entry_tf = "Weekly (1W)"
+
+                            elif current_detected_setup == "MONTHLY_DOJI":
+                                if btc_price >= ref_price + 500: 
+                                    buy_trigger = True
+                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
+                                    entry_tf = "Monthly (1M)"
+                                elif btc_price <= ref_price - 500: 
+                                    sell_trigger = True
+                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
+                                    entry_tf = "Monthly (1M)"
+
+                            elif current_detected_setup == "STRONG_BULL":
+                                if btc_price >= ref_price + 500: 
+                                    buy_trigger = True
+                                    entry_reason = "Zone 1: Strong Bullish Breakout"
+                                    entry_tf = "Weekly / Monthly"
+
+                            elif current_detected_setup == "STRONG_BEAR":
+                                if btc_price <= ref_price - 500: 
+                                    sell_trigger = True
+                                    entry_reason = "Zone 1: Strong Bearish Breakout"
+                                    entry_tf = "Weekly / Monthly"
+
+                            elif current_detected_setup == "DICY_GREEN" and not m_invalidated:
+                                if btc_price <= ref_price - 500: 
+                                    sell_trigger = True
+                                    entry_reason = "Zone 1: Dicy Green Trap Setup"
+                                    entry_tf = "Weekly / Monthly"
+                            
+                            elif current_detected_setup == "DICY_RED" and not m_invalidated:
+                                if btc_price >= ref_price + 500: 
+                                    buy_trigger = True
+                                    entry_reason = "Zone 1: Dicy Red Trap Setup"
+                                    entry_tf = "Weekly / Monthly"
+
+                        # --- ZONE 2 & ZONE 3: DYNAMIC EVENT HIGH / LOW SHIFTS ---
+                        elif current_zone in [2, 3]:
+                            if prev_event_high is not None and btc_price >= prev_event_high: 
+                                buy_trigger = True
+                                entry_reason = f"Zone {current_zone}: Event High Breakout (${prev_event_high:.2f})"
+                                entry_tf = f"Zone {current_zone} Event High"
+                            elif prev_event_low is not None and btc_price <= prev_event_low: 
+                                sell_trigger = True
+                                entry_reason = f"Zone {current_zone}: Event Low Breakout (${prev_event_low:.2f})"
+                                entry_tf = f"Zone {current_zone} Event Low"
 
                     is_same_candle = (candle_time == last_trade_candle_time)
                     is_same_level = (last_trade_price is not None and abs(btc_price - last_trade_price) < 50.0)
@@ -424,6 +487,10 @@ def run_bot():
                             "reason": entry_reason,
                             "timeframe": entry_tf
                         }
+
+                        # Reset follow through flags once active trade is executed
+                        last_tp_hit_price = None
+                        follow_through_direction = None
 
                         active_setup_type = current_detected_setup
                         last_processed_event_id = current_event_id
