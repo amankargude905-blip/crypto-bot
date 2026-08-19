@@ -23,7 +23,7 @@ def run_flask():
 # --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1862803975")
-SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIWgXajnYyz9j-ZloFiIy8RxQfIBZnNw/exec")
+SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIIyRxQfIBZnNw/exec")
 
 ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
 FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
@@ -311,26 +311,30 @@ def run_bot():
 
             # --- 2. EVALUATE HTF SIGNALS WITH STRICT PRIORITY HIERARCHY ---
             else:
-                day1_close = float(d_klines[-3][4])
-                day2_close = float(d_klines[-2][4])
-                daily_close_distance = abs(day1_close - day2_close)
+                # STRICT INDEXING: ONLY CLOSED PAST CANDLES (EXCLUDING LIVE CANDLE [-1])
+                day_closed_1 = float(d_klines[-3][4]) 
+                day_closed_2 = float(d_klines[-2][4]) 
+                daily_close_distance = abs(day_closed_1 - day_closed_2)
 
                 w_open = float(w_klines[-2][1])
                 w_close = float(w_klines[-2][4])
                 weekly_dist = abs(w_open - w_close)
 
-                m_open = float(m_klines[-1][1]) # Current Month Open
+                m_open = float(m_klines[-2][1])
+                m_close = float(m_klines[-2][4])
+                monthly_dist = abs(m_open - m_close)
 
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
-                m_type, _ = analyze_candle_structure(float(m_klines[-1][1]), float(m_klines[-1][2]), float(m_klines[-1][3]), float(m_klines[-1][4]))
+                m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
                 # STRICT PRIORITY HIERARCHY EVALUATION
                 current_detected_setup = None
                 
-                # Priority 1: 2-Day Close Consolidation
+                # Priority 1: 2-Day Closed Consolidation (Daily)
                 if daily_close_distance <= 300.0:
                     current_detected_setup = "2_DOJI"
-                # Priority 2: Weekly Signals (Strong / Doji / Dicy)
+
+                # Priority 2: Weekly Timeframe Setups
                 elif w_type == "STRONG_BEAR":
                     current_detected_setup = "STRONG_BEAR"
                 elif w_type == "STRONG_BULL":
@@ -341,17 +345,20 @@ def run_bot():
                     current_detected_setup = "DICY_GREEN"
                 elif w_type == "DICY_RED":
                     current_detected_setup = "DICY_RED"
-                # Priority 3: Monthly Signals
+
+                # Priority 3: Monthly Timeframe Setups (Including Monthly Doji)
                 elif m_type == "STRONG_BEAR":
                     current_detected_setup = "STRONG_BEAR"
                 elif m_type == "STRONG_BULL":
                     current_detected_setup = "STRONG_BULL"
+                elif monthly_dist <= 2000.0 or m_type == "DOJI":
+                    current_detected_setup = "MONTHLY_DOJI"
                 elif m_type == "DICY_GREEN":
                     current_detected_setup = "DICY_GREEN"
                 elif m_type == "DICY_RED":
                     current_detected_setup = "DICY_RED"
 
-                # NEW SETUP / CANDLE FORMATION CHANGE DETECTION
+                # NEW SETUP DETECTION
                 if active_setup_type is not None and current_detected_setup != active_setup_type:
                     send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters for fresh 9 SL strategy.")
                     reset_event_state()
@@ -386,7 +393,7 @@ def run_bot():
                     sell_trigger = False
                     entry_reason = ""
                     entry_tf = ""
-                    ref_price = float(d_klines[-2][4])
+                    ref_price = float(d_klines[-2][4]) # Lock Yesterday's Closed Price
 
                     if last_tp_hit_price is not None and follow_through_direction is not None:
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
@@ -410,15 +417,17 @@ def run_bot():
                                     entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
                                     entry_tf = "Daily (1D)"
                             
-                            elif current_detected_setup == "WEEKLY_DOJI":
+                            elif current_detected_setup in ["WEEKLY_DOJI", "MONTHLY_DOJI"]:
+                                tf_label = "Weekly" if current_detected_setup == "WEEKLY_DOJI" else "Monthly"
+                                range_label = "1200" if current_detected_setup == "WEEKLY_DOJI" else "2000"
                                 if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
-                                    entry_tf = "Weekly (1W)"
+                                    entry_reason = f"Zone 1: {tf_label} Doji Breakout (<= {range_label} pts range)"
+                                    entry_tf = f"{tf_label} HTF"
                                 elif btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
-                                    entry_tf = "Weekly (1W)"
+                                    entry_reason = f"Zone 1: {tf_label} Doji Breakout (<= {range_label} pts range)"
+                                    entry_tf = f"{tf_label} HTF"
 
                             elif current_detected_setup == "STRONG_BULL":
                                 if btc_price >= ref_price + 500: 
