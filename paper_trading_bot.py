@@ -74,42 +74,36 @@ def log_to_sheet(data):
         print(f"Sheet Error: {e}")
 
 def fetch_btc_data():
-    """Fetch current BTC price and HTF data with Strict Date-Based Sorting"""
+    """Fetch current BTC price and HTF data with Cloud-Block Bypass Endpoints"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
+    binance_vision = "https://data-api.binance.vision"
     try:
-        v_url = "https://data-api.binance.vision/api/v3"
-        r_5m = requests.get(f"{v_url}/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5).json()
-        current_price = float(r_5m[0][4])
-        candle_time = r_5m[0][0]
+        r = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            current_price = float(data[0][4])
+            candle_time = data[0][0]
 
-        d_data = requests.get(f"{v_url}/klines?symbol=BTCUSDT&interval=1d&limit=10", headers=headers, timeout=5).json()
-        w_data = requests.get(f"{v_url}/klines?symbol=BTCUSDT&interval=1w&limit=5", headers=headers, timeout=5).json()
-        m_data = requests.get(f"{v_url}/klines?symbol=BTCUSDT&interval=1M&limit=5", headers=headers, timeout=5).json()
+            d_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
+            w_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
+            m_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
 
-        d_data = sorted(d_data, key=lambda x: x[0])
-        w_data = sorted(w_data, key=lambda x: x[0])
-        m_data = sorted(m_data, key=lambda x: x[0])
-
-        return current_price, candle_time, d_data, w_data, m_data
+            return current_price, candle_time, d_data, w_data, m_data
     except Exception:
         pass
 
     try:
-        b_url = "https://api.binance.com/api/v3"
-        r_5m = requests.get(f"{b_url}/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5).json()
-        current_price = float(r_5m[0][4])
-        candle_time = r_5m[0][0]
+        cc_url = "https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USDT&limit=1"
+        r_cc = requests.get(cc_url, headers=headers, timeout=5).json()
+        current_price = float(r_cc['Data']['Data'][-1]['close'])
+        candle_time = r_cc['Data']['Data'][-1]['time'] * 1000
 
-        d_data = requests.get(f"{b_url}/klines?symbol=BTCUSDT&interval=1d&limit=10", headers=headers, timeout=5).json()
-        w_data = requests.get(f"{b_url}/klines?symbol=BTCUSDT&interval=1w&limit=5", headers=headers, timeout=5).json()
-        m_data = requests.get(f"{b_url}/klines?symbol=BTCUSDT&interval=1M&limit=5", headers=headers, timeout=5).json()
-
-        d_data = sorted(d_data, key=lambda x: x[0])
-        w_data = sorted(w_data, key=lambda x: x[0])
-        m_data = sorted(m_data, key=lambda x: x[0])
+        d_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
+        w_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
+        m_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
 
         return current_price, candle_time, d_data, w_data, m_data
     except Exception as e:
@@ -139,6 +133,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
     return "NORMAL", body_pct
 
 def reset_event_state():
+    """Helper to reset zone states and event tracking limits"""
     global current_zone, zone_sl_count, total_strategy_trades, active_setup_type
     global event_high, event_low, last_tp_hit_price, follow_through_direction
     current_zone = 1
@@ -175,6 +170,7 @@ def run_bot():
                 time.sleep(10)
                 continue
 
+            # TRACK HIGH AND LOW FROM EVENT START TIME
             prev_event_high = event_high
             prev_event_low = event_low
 
@@ -200,17 +196,25 @@ def run_bot():
                     if btc_price >= tp_p:
                         pnl = qty * (tp_p - entry_p)
                         ACCOUNT_BALANCE += pnl
+                        
+                        # Prepare Follow-Through Tracking
                         last_tp_hit_price = tp_p
                         follow_through_direction = "BUY"
                         
                         send_telegram(f"🎯 *TARGET HIT (BUY)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Target Hit! Standing by for Follow-Through Entry (+200 pts).*")
                         
                         log_to_sheet({
-                            "script": "BTCUSDT", "type": "EXIT_TP", "exit": round(btc_price, 2),
-                            "pnl_pts": TP_POINTS, "pnl_usd": round(pnl, 2), "exit_reason": "Target Hit (1:10)", "balance": round(ACCOUNT_BALANCE, 2)
+                            "script": "BTCUSDT",
+                            "type": "EXIT_TP",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": TP_POINTS,
+                            "pnl_usd": round(pnl, 2),
+                            "exit_reason": "Target Hit (1:10)",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
                         current_position = None
+                        # Reset zone limits for fresh 3-zone system on follow-through
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
@@ -220,14 +224,21 @@ def run_bot():
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
                         total_strategy_trades += 1
+                        
+                        # Cancel follow-through if SL hits on ongoing trade
                         last_tp_hit_price = None
                         follow_through_direction = None
 
                         send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         
                         log_to_sheet({
-                            "script": "BTCUSDT", "type": "EXIT_SL", "exit": round(btc_price, 2),
-                            "pnl_pts": -SL_POINTS, "pnl_usd": -round(loss, 2), "exit_reason": "Stop Loss Hit", "balance": round(ACCOUNT_BALANCE, 2)
+                            "script": "BTCUSDT",
+                            "type": "EXIT_SL",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": -SL_POINTS,
+                            "pnl_usd": -round(loss, 2),
+                            "exit_reason": "Stop Loss Hit",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
                         current_position = None
@@ -243,17 +254,25 @@ def run_bot():
                     if btc_price <= tp_p:
                         pnl = qty * (entry_p - tp_p)
                         ACCOUNT_BALANCE += pnl
+
+                        # Prepare Follow-Through Tracking
                         last_tp_hit_price = tp_p
                         follow_through_direction = "SELL"
 
                         send_telegram(f"🎯 *TARGET HIT (SELL)!*\nProfit: +${pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Target Hit! Standing by for Follow-Through Entry (-200 pts).*")
                         
                         log_to_sheet({
-                            "script": "BTCUSDT", "type": "EXIT_TP", "exit": round(btc_price, 2),
-                            "pnl_pts": TP_POINTS, "pnl_usd": round(pnl, 2), "exit_reason": "Target Hit (1:10)", "balance": round(ACCOUNT_BALANCE, 2)
+                            "script": "BTCUSDT",
+                            "type": "EXIT_TP",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": TP_POINTS,
+                            "pnl_usd": round(pnl, 2),
+                            "exit_reason": "Target Hit (1:10)",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
                         current_position = None
+                        # Reset zone limits for fresh 3-zone system on follow-through
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
@@ -263,18 +282,26 @@ def run_bot():
                         ACCOUNT_BALANCE -= loss
                         zone_sl_count += 1
                         total_strategy_trades += 1
+
+                        # Cancel follow-through if SL hits
                         last_tp_hit_price = None
                         follow_through_direction = None
 
                         send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nLoss: -${loss:.2f}\nZone {current_zone} SL Count: {zone_sl_count}/3\nTotal Setup Trades: {total_strategy_trades}/9")
                         
                         log_to_sheet({
-                            "script": "BTCUSDT", "type": "EXIT_SL", "exit": round(btc_price, 2),
-                            "pnl_pts": -SL_POINTS, "pnl_usd": -round(loss, 2), "exit_reason": "Stop Loss Hit", "balance": round(ACCOUNT_BALANCE, 2)
+                            "script": "BTCUSDT",
+                            "type": "EXIT_SL",
+                            "exit": round(btc_price, 2),
+                            "pnl_pts": -SL_POINTS,
+                            "pnl_usd": -round(loss, 2),
+                            "exit_reason": "Stop Loss Hit",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
                         current_position = None
 
+                # ZONE SHIFT EVALUATION AFTER SL HIT
                 if zone_sl_count >= 3:
                     if current_zone < 3:
                         current_zone += 1
@@ -285,19 +312,18 @@ def run_bot():
                         reset_event_state()
                         event_finished = True
 
-            # --- 2. EVALUATE HTF SIGNALS ---
+            # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
             else:
-                # CANDLE 1 (Day Before Yesterday - Completed)
+                # Daily Candles Check for Consecutive Doji Logic
                 day1_open = float(d_klines[-3][1])
                 day1_close = float(d_klines[-3][4])
-                day1_body_dist = abs(day1_open - day1_close)
+                day1_diff = abs(day1_open - day1_close)
 
-                # CANDLE 2 (Yesterday - Completed)
                 day2_open = float(d_klines[-2][1])
                 day2_close = float(d_klines[-2][4])
-                day2_body_dist = abs(day2_open - day2_close)
+                day2_diff = abs(day2_open - day2_close)
 
-                # OTHER HTF METRICS
+                # HTF Open-Close Distance Logic for Weekly & Monthly Doji
                 w_open = float(w_klines[-2][1])
                 w_close = float(w_klines[-2][4])
                 weekly_dist = abs(w_open - w_close)
@@ -310,10 +336,11 @@ def run_bot():
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
+                # Current Candle Context Identification
                 current_detected_setup = None
                 
-                # --- NEW STRICT RULE: BOTH CANDLES MUST INDIVIDUALLY HAVE (OPEN - CLOSE) <= 300 ---
-                if day1_body_dist <= 300.0 and day2_body_dist <= 300.0:
+                # Check 2 Consecutive Daily Candles with Open-to-Close < 300 pts
+                if day1_diff < 300.0 and day2_diff < 300.0:
                     current_detected_setup = "2_DOJI"
                 elif weekly_dist <= 1200.0:
                     current_detected_setup = "WEEKLY_DOJI"
@@ -328,22 +355,24 @@ def run_bot():
                 elif w_type == "DICY_RED" or m_type == "DICY_RED":
                     current_detected_setup = "DICY_RED"
 
+                # NEW SETUP / CANDLE FORMATION CHANGE DETECTION
                 if active_setup_type is not None and current_detected_setup != active_setup_type:
-                    send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters.")
+                    send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters for fresh 9 SL strategy.")
                     reset_event_state()
                     active_setup_type = current_detected_setup
 
+                # --- 3000-POINT INVALIDATION CHECK FOR MONTHLY DICY CANDLES ---
                 m_invalidated = False
                 if m_type == "DICY_GREEN" and btc_price >= (m_open + 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
-                        send_telegram(f"🚨 *Monthly Dicy Green Invalidated!* Unlocking scanning...")
+                        send_telegram(f"🚨 *Monthly Dicy Green Invalidated!* Price moved +3000 pts above Current Monthly Open (${m_open:.2f}). Unlocking scanning...")
                         m_invalid_alert_sent = True
 
                 elif m_type == "DICY_RED" and btc_price <= (m_open - 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
-                        send_telegram(f"🚨 *Monthly Dicy Red Invalidated!* Unlocking scanning...")
+                        send_telegram(f"🚨 *Monthly Dicy Red Invalidated!* Price moved -3000 pts below Current Monthly Open (${m_open:.2f}). Unlocking scanning...")
                         m_invalid_alert_sent = True
 
                 if m_invalidated:
@@ -361,9 +390,9 @@ def run_bot():
                     sell_trigger = False
                     entry_reason = ""
                     entry_tf = ""
-                    ref_price = day2_close  # Marking Level based on 2nd Candle Close
+                    ref_price = float(d_klines[-2][4])
 
-                    # --- FOLLOW-THROUGH LOGIC ---
+                    # --- FOLLOW-THROUGH LOGIC EVALUATION ---
                     if last_tp_hit_price is not None and follow_through_direction is not None:
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
                             buy_trigger = True
@@ -374,64 +403,65 @@ def run_bot():
                             entry_reason = f"Follow-Through SELL Breakout (-200 pts below Prev TP ${last_tp_hit_price:.2f})"
                             entry_tf = "Trend Continuation"
 
-                    # --- STANDARD ENTRY LOGIC ---
+                    # --- STANDARD ENTRY LOGIC (IF NO FOLLOW-THROUGH ACTIVE) ---
                     if not buy_trigger and not sell_trigger:
+                        # --- ZONE 1: INITIAL STRATEGY CALCULATED LEVEL ---
                         if current_zone == 1:
                             if current_detected_setup == "2_DOJI":
-                                if btc_price >= ref_price + 200.0: 
+                                if btc_price >= ref_price + 200: 
                                     buy_trigger = True
-                                    entry_reason = f"Zone 1: Dual Candle (Open-Close <= 300) Breakout (+200 pts from 2nd Close ${ref_price:.2f})"
+                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
                                     entry_tf = "Daily (1D)"
-                                elif btc_price <= ref_price - 200.0: 
+                                elif btc_price <= ref_price - 200: 
                                     sell_trigger = True
-                                    entry_reason = f"Zone 1: Dual Candle (Open-Close <= 300) Breakout (-200 pts from 2nd Close ${ref_price:.2f})"
+                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
                                     entry_tf = "Daily (1D)"
                             
                             elif current_detected_setup == "WEEKLY_DOJI":
-                                if btc_price >= ref_price + 500.0: 
+                                if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout"
+                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
                                     entry_tf = "Weekly (1W)"
-                                elif btc_price <= ref_price - 500.0: 
+                                elif btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout"
+                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
                                     entry_tf = "Weekly (1W)"
 
                             elif current_detected_setup == "MONTHLY_DOJI":
-                                if btc_price >= ref_price + 500.0: 
+                                if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Monthly Doji Breakout"
+                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
                                     entry_tf = "Monthly (1M)"
-                                elif btc_price <= ref_price - 500.0: 
+                                elif btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Monthly Doji Breakout"
+                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
                                     entry_tf = "Monthly (1M)"
 
                             elif current_detected_setup == "STRONG_BULL":
-                                if btc_price >= ref_price + 500.0: 
+                                if btc_price >= ref_price + 500: 
                                     buy_trigger = True
                                     entry_reason = "Zone 1: Strong Bullish Breakout"
                                     entry_tf = "Weekly / Monthly"
 
                             elif current_detected_setup == "STRONG_BEAR":
-                                if btc_price <= ref_price - 500.0: 
+                                if btc_price <= ref_price - 500: 
                                     sell_trigger = True
                                     entry_reason = "Zone 1: Strong Bearish Breakout"
                                     entry_tf = "Weekly / Monthly"
 
                             elif current_detected_setup == "DICY_GREEN" and not m_invalidated:
-                                if btc_price <= ref_price - 500.0: 
+                                if btc_price <= ref_price - 500: 
                                     sell_trigger = True
                                     entry_reason = "Zone 1: Dicy Green Trap Setup"
                                     entry_tf = "Weekly / Monthly"
                             
                             elif current_detected_setup == "DICY_RED" and not m_invalidated:
-                                if btc_price >= ref_price + 500.0: 
+                                if btc_price >= ref_price + 500: 
                                     buy_trigger = True
                                     entry_reason = "Zone 1: Dicy Red Trap Setup"
                                     entry_tf = "Weekly / Monthly"
 
-                        # ZONE 2 & 3 BREAKOUTS
+                        # --- ZONE 2 & ZONE 3: DYNAMIC EVENT HIGH / LOW SHIFTS ---
                         elif current_zone in [2, 3]:
                             if prev_event_high is not None and btc_price >= prev_event_high: 
                                 buy_trigger = True
@@ -463,6 +493,7 @@ def run_bot():
                             "timeframe": entry_tf
                         }
 
+                        # Reset follow through flags once active trade is executed
                         last_tp_hit_price = None
                         follow_through_direction = None
 
@@ -486,11 +517,16 @@ def run_bot():
                         send_telegram(msg)
                         
                         log_to_sheet({
-                            "script": "BTCUSDT", "type": f"ENTRY_{side}", "reason": entry_reason,
-                            "entry": round(btc_price, 2), "risk": FIXED_RISK_USD, "rr": "1:10", "balance": round(ACCOUNT_BALANCE, 2)
+                            "script": "BTCUSDT",
+                            "type": f"ENTRY_{side}",
+                            "reason": entry_reason,
+                            "entry": round(btc_price, 2),
+                            "risk": FIXED_RISK_USD,
+                            "rr": "1:10",
+                            "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Active Setup: {active_setup_type}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Event High: {event_high} | Event Low: {event_low} | Active Setup: {active_setup_type}")
             time.sleep(300)
 
         except Exception as e:
