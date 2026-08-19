@@ -314,9 +314,16 @@ def run_bot():
 
             # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
             else:
-                day1_close = float(d_klines[-3][4])  # 2 days ago Close
-                day2_close = float(d_klines[-2][4])  # 1 day ago Close
-                daily_close_distance = abs(day1_close - day2_close)
+                # FIXED: Strictly evaluate the LAST 2 COMPLETED Daily Closes
+                # d_klines[-1] = Live Current Day (Unclosed) -> Ignored for 2-day consolidation check
+                # d_klines[-2] = Yesterday Close (Completed Day 1)
+                # d_klines[-3] = Day Before Yesterday Close (Completed Day 2)
+                if len(d_klines) >= 3:
+                    day1_close = float(d_klines[-2][4])  # Yesterday Close
+                    day2_close = float(d_klines[-3][4])  # Day Before Yesterday Close
+                    daily_close_distance = abs(day1_close - day2_close)
+                else:
+                    daily_close_distance = 99999.0
 
                 # HTF Open-Close Distance Logic for Weekly & Monthly Doji
                 w_open = float(w_klines[-2][1])
@@ -334,7 +341,7 @@ def run_bot():
                 # Current Candle Context Identification
                 current_detected_setup = None
                 
-                # Check 2 Daily Close Distance <= 300 pts
+                # Check 2 Daily Close Distance <= 300 pts (ONLY IF BOTH DAYS ARE CLOSED)
                 if daily_close_distance <= 300.0:
                     current_detected_setup = "2_DOJI"
                 elif weekly_dist <= 1200.0:
