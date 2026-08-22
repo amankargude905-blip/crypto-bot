@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import threading
+import ccxt
 from flask import Flask
 from datetime import datetime, timezone
 
@@ -20,6 +21,23 @@ def run_flask():
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1862803975")
 SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIWgXajnYyz9j-ZloFiIy8RxQfIBZnNw/exec")
+
+# --- BINANCE DEMO / TESTNET CONFIGURATION ---
+BINANCE_API_KEY = os.environ.get("BINANCE_DEMO_API_KEY", "")
+BINANCE_SECRET_KEY = os.environ.get("BINANCE_DEMO_SECRET_KEY", "")
+
+# Initialize Binance Demo Exchange via CCXT
+exchange = None
+if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+    try:
+        exchange = ccxt.binanceusdm({
+            'apiKey': BINANCE_API_KEY,
+            'secret': BINANCE_SECRET_KEY,
+            'enableRateLimit': True,
+        })
+        exchange.set_sandbox_mode(True)  # Enable Demo Trading Mode
+    except Exception as e:
+        print(f"Error initializing Binance Demo exchange: {e}")
 
 ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
 FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
@@ -72,6 +90,47 @@ def log_to_sheet(data):
         requests.post(SHEET_WEBAPP_URL, json=data, timeout=5)
     except Exception as e:
         print(f"Sheet Error: {e}")
+
+def place_binance_demo_order(side, qty, entry_price, sl_price, tp_price):
+    """Executes order on Binance Demo Account if API Keys are configured"""
+    if not exchange:
+        print("Binance Demo Exchange not configured. Skipping live API order placement.")
+        return None
+    try:
+        # Place Market Order
+        order_side = 'buy' if side == 'BUY' else 'sell'
+        order = exchange.create_order(
+            symbol='BTC/USDT',
+            type='market',
+            side=order_side,
+            amount=qty
+        )
+        print(f"Binance Demo Order Placed: {order['id']}")
+
+        # Place Stop Loss Order
+        sl_side = 'sell' if side == 'BUY' else 'buy'
+        exchange.create_order(
+            symbol='BTC/USDT',
+            type='STOP_MARKET',
+            side=sl_side,
+            amount=qty,
+            params={'stopPrice': sl_price, 'reduceOnly': True}
+        )
+
+        # Place Take Profit Order
+        exchange.create_order(
+            symbol='BTC/USDT',
+            type='TAKE_PROFIT_MARKET',
+            side=sl_side,
+            amount=qty,
+            params={'stopPrice': tp_price, 'reduceOnly': True}
+        )
+
+        return order
+    except Exception as e:
+        print(f"Binance Demo Order Placement Error: {e}")
+        send_telegram(f"⚠️ *Binance Demo Order Error:* {e}")
+        return None
 
 def fetch_btc_data():
     """Fetch current BTC price and HTF data with Cloud-Block Bypass Endpoints"""
@@ -482,6 +541,9 @@ def run_bot():
 
                         sl = btc_price - SL_POINTS if side == "BUY" else btc_price + SL_POINTS
                         tp = btc_price + TP_POINTS if side == "BUY" else btc_price - TP_POINTS
+
+                        # Place actual Order on Binance Demo Account
+                        place_binance_demo_order(side, qty, btc_price, sl, tp)
 
                         current_position = {
                             "side": side,
