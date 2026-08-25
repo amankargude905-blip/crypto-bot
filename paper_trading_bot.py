@@ -20,7 +20,7 @@ def run_flask():
 # --- CONFIGURATION & ENV VARS ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1862803975")
-SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIWgXajnYyz9j-ZloFiIy8RxQfIBZnNw/exec")
+SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbzc5MXjGOajI0XTWisYR2sucJlAWjDnuXru01Cu8gUoHD1iatYgC2uZSrW1lqBorvRVpQ/exec")
 
 # --- BINANCE DEMO / TESTNET CONFIGURATION ---
 BINANCE_API_KEY = os.environ.get("BINANCE_DEMO_API_KEY", "")
@@ -58,13 +58,15 @@ event_finished = False      # Lock flag: Lockdown on Max 9 SLs
 INITIALIZED = False         # Warmup guard for fresh deploy/restarts
 m_invalid_alert_sent = False # Prevention for Telegram spamming on Monthly Invalidation
 
+# --- FIXED LEVEL LOCK VARIABLES ---
+zone1_ref_level = None       # Fixed Reference Price locked for Zone 1
+event_high = None            # Frozen Event High for Zone 2 & 3
+event_low = None             # Frozen Event Low for Zone 2 & 3
+is_event_frozen = False      # Flag to check if Event High/Low are locked
+
 # FOLLOW-THROUGH SPECIFIC TRACKING
 last_tp_hit_price = None
 follow_through_direction = None
-
-# EVENT SPECIFIC HIGH/LOW TRACKING
-event_high = None
-event_low = None
 
 # Tracking HTF Event IDs to detect NEW Events
 last_processed_event_id = None 
@@ -139,17 +141,14 @@ def fetch_btc_data():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
-    # Binance USDT-M Futures Endpoint
     fapi_base = "https://fapi.binance.com"
     try:
-        # Fetch 5m Klines from Futures API
         r = requests.get(f"{fapi_base}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
-            current_price = float(data[0][4]) # Current Futures Close Price
+            current_price = float(data[0][4])
             candle_time = data[0][0]
 
-            # Fetch Daily, Weekly, Monthly Klines from FUTURES Data
             d_data = requests.get(f"{fapi_base}/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
             w_data = requests.get(f"{fapi_base}/fapi/v1/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
             m_data = requests.get(f"{fapi_base}/fapi/v1/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
@@ -158,7 +157,6 @@ def fetch_btc_data():
     except Exception as e:
         print(f"Futures Data Fetch Error: {e}")
 
-    # Fallback to CCXT if direct endpoints fail
     try:
         if exchange:
             ticker = exchange.fetch_ticker('BTC/USDT')
@@ -169,7 +167,6 @@ def fetch_btc_data():
             w_data = exchange.fetch_ohlcv('BTC/USDT', timeframe='1w', limit=3)
             m_data = exchange.fetch_ohlcv('BTC/USDT', timeframe='1M', limit=3)
             
-            # Format CCXT response to match Binance JSON format [time, open, high, low, close]
             d_fmt = [[c[0], c[1], c[2], c[3], c[4]] for c in d_data]
             w_fmt = [[c[0], c[1], c[2], c[3], c[4]] for c in w_data]
             m_fmt = [[c[0], c[1], c[2], c[3], c[4]] for c in m_data]
@@ -205,18 +202,21 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 def reset_event_state():
     global current_zone, zone_sl_count, total_strategy_trades, active_setup_type
     global event_high, event_low, last_tp_hit_price, follow_through_direction
+    global zone1_ref_level, is_event_frozen
     current_zone = 1
     zone_sl_count = 0
     total_strategy_trades = 0
     active_setup_type = None
     event_high = None
     event_low = None
+    zone1_ref_level = None
+    is_event_frozen = False
     last_tp_hit_price = None
     follow_through_direction = None
 
 def run_bot():
     global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
-    global event_high, event_low, event_finished, INITIALIZED, m_invalid_alert_sent
+    global event_high, event_low, is_event_frozen, zone1_ref_level, event_finished, INITIALIZED, m_invalid_alert_sent
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
     global last_tp_hit_price, follow_through_direction
 
@@ -239,11 +239,10 @@ def run_bot():
                 time.sleep(10)
                 continue
 
-            prev_event_high = event_high
-            prev_event_low = event_low
-
-            event_high = btc_price if event_high is None else max(event_high, btc_price)
-            event_low = btc_price if event_low is None else min(event_low, btc_price)
+            # Track preliminary high/low ONLY IF not locked/frozen
+            if not is_event_frozen:
+                event_high = btc_price if event_high is None else max(event_high, btc_price)
+                event_low = btc_price if event_low is None else min(event_low, btc_price)
 
             # --- 1. ACTIVE POSITION MANAGEMENT ---
             if current_position is not None:
@@ -367,7 +366,7 @@ def run_bot():
                     if current_zone < 3:
                         current_zone += 1
                         zone_sl_count = 0
-                        send_telegram(f"⚠️ *Zone Shift Triggered!* Switching to Zone {current_zone}")
+                        send_telegram(f"⚠️ *Zone Shift Triggered!* Switching to Zone {current_zone} using Frozen Event High (${event_high:.2f}) / Low (${event_low:.2f})")
                     else:
                         send_telegram(f"🚨 *All 3 Zones Failed (Max 9 SLs Hit)!* Event Terminated.")
                         reset_event_state()
@@ -412,10 +411,21 @@ def run_bot():
                 elif w_type == "DICY_RED" or m_type == "DICY_RED":
                     current_detected_setup = "DICY_RED"
 
+                # Reset setup state if HTF setup type changes
                 if active_setup_type is not None and current_detected_setup != active_setup_type:
                     send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters for fresh 9 SL strategy.")
                     reset_event_state()
                     active_setup_type = current_detected_setup
+
+                # LOCK ZONE 1 REFERENCE PRICE AND FREEZE EVENT HIGH/LOW ON SETUP DETECTION
+                if current_detected_setup is not None:
+                    if zone1_ref_level is None:
+                        zone1_ref_level = float(d_klines[-2][4])  # Lock Prev Candle Close
+                        print(f"🔒 Zone 1 Reference Price Locked at: ${zone1_ref_level:.2f}")
+
+                    if not is_event_frozen:
+                        is_event_frozen = True
+                        print(f"❄️ Event High/Low Frozen for Zone 2 & 3: High=${event_high:.2f}, Low=${event_low:.2f}")
 
                 m_invalidated = False
                 if m_type == "DICY_GREEN" and btc_price >= (m_open + 3000.0):
@@ -445,7 +455,9 @@ def run_bot():
                     sell_trigger = False
                     entry_reason = ""
                     entry_tf = ""
-                    ref_price = float(d_klines[-2][4])
+                    
+                    # ALWAYS USE LOCKED REFERENCE PRICE FOR ZONE 1
+                    ref_price = zone1_ref_level if zone1_ref_level is not None else float(d_klines[-2][4])
 
                     if last_tp_hit_price is not None and follow_through_direction is not None:
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
@@ -462,66 +474,67 @@ def run_bot():
                             if current_detected_setup == "2_DOJI":
                                 if btc_price >= ref_price + 200: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
+                                    entry_reason = f"Zone 1: 2-Day Close Breakout (+200 pts above Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Daily (1D)"
                                 elif btc_price <= ref_price - 200: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: 2-Day Close Consolidation Breakout (<= 300 pts range)"
+                                    entry_reason = f"Zone 1: 2-Day Close Breakout (-200 pts below Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Daily (1D)"
                             
                             elif current_detected_setup == "WEEKLY_DOJI":
                                 if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
+                                    entry_reason = f"Zone 1: Weekly Doji Breakout (+500 pts above Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly (1W)"
                                 elif btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Weekly Doji Breakout (<= 1200 pts range)"
+                                    entry_reason = f"Zone 1: Weekly Doji Breakout (-500 pts below Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly (1W)"
 
                             elif current_detected_setup == "MONTHLY_DOJI":
                                 if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
+                                    entry_reason = f"Zone 1: Monthly Doji Breakout (+500 pts above Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Monthly (1M)"
                                 elif btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Monthly Doji Breakout (<= 2000 pts range)"
+                                    entry_reason = f"Zone 1: Monthly Doji Breakout (-500 pts below Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Monthly (1M)"
 
                             elif current_detected_setup == "STRONG_BULL":
                                 if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Strong Bullish Breakout"
+                                    entry_reason = f"Zone 1: Strong Bull Breakout (+500 pts above Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly / Monthly"
 
                             elif current_detected_setup == "STRONG_BEAR":
                                 if btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Strong Bearish Breakout"
+                                    entry_reason = f"Zone 1: Strong Bear Breakout (-500 pts below Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly / Monthly"
 
                             elif current_detected_setup == "DICY_GREEN" and not m_invalidated:
                                 if btc_price <= ref_price - 500: 
                                     sell_trigger = True
-                                    entry_reason = "Zone 1: Dicy Green Trap Setup"
+                                    entry_reason = f"Zone 1: Dicy Green Trap Setup (-500 pts below Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly / Monthly"
                             
                             elif current_detected_setup == "DICY_RED" and not m_invalidated:
                                 if btc_price >= ref_price + 500: 
                                     buy_trigger = True
-                                    entry_reason = "Zone 1: Dicy Red Trap Setup"
+                                    entry_reason = f"Zone 1: Dicy Red Trap Setup (+500 pts above Locked Ref ${ref_price:.2f})"
                                     entry_tf = "Weekly / Monthly"
 
+                        # ZONE 2 & 3: EXECUTE STRICTLY ON FROZEN EVENT HIGH & LOW
                         elif current_zone in [2, 3]:
-                            if prev_event_high is not None and btc_price >= prev_event_high: 
+                            if event_high is not None and btc_price >= event_high: 
                                 buy_trigger = True
-                                entry_reason = f"Zone {current_zone}: Event High Breakout (${prev_event_high:.2f})"
-                                entry_tf = f"Zone {current_zone} Event High"
-                            elif prev_event_low is not None and btc_price <= prev_event_low: 
+                                entry_reason = f"Zone {current_zone}: Event High Breakout (${event_high:.2f})"
+                                entry_tf = f"Zone {current_zone} Frozen Event High"
+                            elif event_low is not None and btc_price <= event_low: 
                                 sell_trigger = True
-                                entry_reason = f"Zone {current_zone}: Event Low Breakout (${prev_event_low:.2f})"
-                                entry_tf = f"Zone {current_zone} Event Low"
+                                entry_reason = f"Zone {current_zone}: Event Low Breakout (${event_low:.2f})"
+                                entry_tf = f"Zone {current_zone} Frozen Event Low"
 
                     is_same_candle = (candle_time == last_trade_candle_time)
                     is_same_level = (last_trade_price is not None and abs(btc_price - last_trade_price) < 50.0)
@@ -579,7 +592,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Futures Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Event High: {event_high} | Event Low: {event_low} | Active Setup: {active_setup_type}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Futures Price: ${btc_price:.2f} | Ref Price: {zone1_ref_level} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Frozen Event High: {event_high} | Frozen Event Low: {event_low}")
             time.sleep(300)
 
         except Exception as e:
