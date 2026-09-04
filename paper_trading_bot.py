@@ -40,7 +40,7 @@ event_finished = False      # Lock flag: Lockdown on Max 9 SLs
 INITIALIZED = False         # Warmup guard for fresh deploy/restarts
 m_invalid_alert_sent = False # Prevention for Telegram spamming on Monthly Invalidation
 
-# ZONE 1 FIXED REFERENCE LEVEL TRACKING
+# ZONE 1 REFERENCE LEVEL TRACKING
 zone1_ref_level = None
 
 # FOLLOW-THROUGH SPECIFIC TRACKING
@@ -217,13 +217,11 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        # Clean state reset on Target Hit
                         current_position = None
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
 
-                        # Fetch fresh live price for follow-through setup evaluation
                         time.sleep(2)
                         fresh_price, fresh_time, _, _, _ = fetch_btc_data()
                         if fresh_price is not None:
@@ -236,7 +234,6 @@ def run_bot():
                         zone_sl_count += 1
                         total_strategy_trades += 1
                         
-                        # Cancel follow-through if SL hits on ongoing trade
                         last_tp_hit_price = None
                         follow_through_direction = None
 
@@ -266,7 +263,6 @@ def run_bot():
                         pnl = qty * (entry_p - tp_p)
                         ACCOUNT_BALANCE += pnl
 
-                        # Prepare Follow-Through Tracking
                         last_tp_hit_price = tp_p
                         follow_through_direction = "SELL"
 
@@ -282,13 +278,11 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        # Clean state reset on Target Hit
                         current_position = None
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
 
-                        # Fetch fresh live price for follow-through setup evaluation
                         time.sleep(2)
                         fresh_price, fresh_time, _, _, _ = fetch_btc_data()
                         if fresh_price is not None:
@@ -301,7 +295,6 @@ def run_bot():
                         zone_sl_count += 1
                         total_strategy_trades += 1
 
-                        # Cancel follow-through if SL hits
                         last_tp_hit_price = None
                         follow_through_direction = None
 
@@ -332,7 +325,6 @@ def run_bot():
 
             # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
             if current_position is None:
-                # Daily Candles Check for Consecutive Doji Logic
                 day1_open = float(d_klines[-3][1])
                 day1_close = float(d_klines[-3][4])
                 day1_diff = abs(day1_open - day1_close)
@@ -341,7 +333,6 @@ def run_bot():
                 day2_close = float(d_klines[-2][4])
                 day2_diff = abs(day2_open - day2_close)
 
-                # HTF Open-Close Distance Logic for Weekly & Monthly Doji
                 w_open = float(w_klines[-2][1])
                 w_close = float(w_klines[-2][4])
                 weekly_dist = abs(w_open - w_close)
@@ -354,10 +345,8 @@ def run_bot():
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
-                # Current Candle Context Identification
                 current_detected_setup = None
                 
-                # Check 2 Consecutive Daily Candles with Open-to-Close < 300 pts
                 if day1_diff < 300.0 and day2_diff < 300.0:
                     current_detected_setup = "2_DOJI"
                 elif weekly_dist <= 1200.0:
@@ -373,7 +362,6 @@ def run_bot():
                 elif w_type == "DICY_RED" or m_type == "DICY_RED":
                     current_detected_setup = "DICY_RED"
 
-                # NEW SETUP / CANDLE FORMATION CHANGE DETECTION
                 if active_setup_type is not None and current_detected_setup != active_setup_type:
                     send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters for fresh 9 SL strategy.")
                     reset_event_state()
@@ -410,7 +398,6 @@ def run_bot():
                     entry_tf = ""
                     ref_price = float(d_klines[-2][4])
 
-                    # Lock reference price for Zone 1
                     if current_zone == 1 and zone1_ref_level is None:
                         zone1_ref_level = ref_price
 
@@ -425,9 +412,8 @@ def run_bot():
                             entry_reason = f"Follow-Through SELL Breakout (-200 pts below Prev TP ${last_tp_hit_price:.2f})"
                             entry_tf = "Trend Continuation"
 
-                    # --- STANDARD ENTRY LOGIC (IF NO FOLLOW-THROUGH ACTIVE) ---
+                    # --- STANDARD ENTRY LOGIC ---
                     if not buy_trigger and not sell_trigger:
-                        # --- ZONE 1: INITIAL STRATEGY CALCULATED LEVEL ---
                         if current_zone == 1:
                             if current_detected_setup == "2_DOJI":
                                 if btc_price >= ref_price + 200: 
@@ -483,7 +469,6 @@ def run_bot():
                                     entry_reason = "Zone 1: Dicy Red Trap Setup"
                                     entry_tf = "Weekly / Monthly"
 
-                        # --- ZONE 2 & ZONE 3: DYNAMIC EVENT HIGH / LOW SHIFTS ---
                         elif current_zone in [2, 3]:
                             if prev_event_high is not None and btc_price >= prev_event_high: 
                                 buy_trigger = True
@@ -500,10 +485,8 @@ def run_bot():
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        if current_zone == 1 and zone1_ref_level is not None and last_tp_hit_price is None:
-                            entry_p = zone1_ref_level
-                        else:
-                            entry_p = btc_price
+                        # FIX: Always enter at current market/live price
+                        entry_p = btc_price
 
                         sl_p = entry_p + 200.0 if side == "SELL" else entry_p - 200.0
                         tp_p = entry_p - 2000.0 if side == "SELL" else entry_p + 2000.0
@@ -520,7 +503,6 @@ def run_bot():
                             "timeframe": entry_tf
                         }
 
-                        # Reset follow through flags once active trade is executed
                         last_tp_hit_price = None
                         follow_through_direction = None
 
