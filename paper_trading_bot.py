@@ -217,11 +217,18 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
+                        # Clean state reset on Target Hit
                         current_position = None
-                        # Reset zone limits for fresh 3-zone system on follow-through
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
+
+                        # Fetch fresh live price for follow-through setup evaluation
+                        time.sleep(2)
+                        fresh_price, fresh_time, _, _, _ = fetch_btc_data()
+                        if fresh_price is not None:
+                            btc_price = fresh_price
+                            candle_time = fresh_time
 
                     elif btc_price <= sl_p:
                         loss = qty * (entry_p - sl_p)
@@ -275,11 +282,18 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
+                        # Clean state reset on Target Hit
                         current_position = None
-                        # Reset zone limits for fresh 3-zone system on follow-through
                         current_zone = 1
                         zone_sl_count = 0
                         total_strategy_trades = 0
+
+                        # Fetch fresh live price for follow-through setup evaluation
+                        time.sleep(2)
+                        fresh_price, fresh_time, _, _, _ = fetch_btc_data()
+                        if fresh_price is not None:
+                            btc_price = fresh_price
+                            candle_time = fresh_time
 
                     elif btc_price >= sl_p:
                         loss = qty * (sl_p - entry_p)
@@ -317,7 +331,7 @@ def run_bot():
                         event_finished = True
 
             # --- 2. EVALUATE HTF SIGNALS & CANDLE CHANGE RESET ---
-            else:
+            if current_position is None:
                 # Daily Candles Check for Consecutive Doji Logic
                 day1_open = float(d_klines[-3][1])
                 day1_close = float(d_klines[-3][4])
@@ -486,13 +500,11 @@ def run_bot():
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        # --- AAPKA CUSTOM ENTRY, SL, AUR TP CALCULATION FIX ---
-                        if current_zone == 1 and zone1_ref_level is not None:
-                            entry_p = zone1_ref_level  # Fixed locked reference price (e.g., 78000)
+                        if current_zone == 1 and zone1_ref_level is not None and last_tp_hit_price is None:
+                            entry_p = zone1_ref_level
                         else:
-                            entry_p = btc_price  # Dynamic live price for other zones if needed
+                            entry_p = btc_price
 
-                        # SL aur TP calculation fixed entry_p ke basis par
                         sl_p = entry_p + 200.0 if side == "SELL" else entry_p - 200.0
                         tp_p = entry_p - 2000.0 if side == "SELL" else entry_p + 2000.0
 
