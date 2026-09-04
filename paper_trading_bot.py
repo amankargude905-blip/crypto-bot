@@ -32,13 +32,16 @@ TRAIL_LOCK_PTS = 600.0
 
 # State Tracking
 current_position = None     # Dict for active position
-zone_sl_count = 0           # Continuous SL count in current zone (0 to 3)
+zone_sl_count = 0            # Continuous SL count in current zone (0 to 3)
 current_zone = 1            # Zone 1, Zone 2, Zone 3
 total_strategy_trades = 0   # Persistent SL counter across full setup (Max 9)
 active_setup_type = None    # Track active setup type
 event_finished = False      # Lock flag: Lockdown on Max 9 SLs
 INITIALIZED = False         # Warmup guard for fresh deploy/restarts
 m_invalid_alert_sent = False # Prevention for Telegram spamming on Monthly Invalidation
+
+# ZONE 1 FIXED REFERENCE LEVEL TRACKING
+zone1_ref_level = None
 
 # FOLLOW-THROUGH SPECIFIC TRACKING
 last_tp_hit_price = None
@@ -135,7 +138,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 def reset_event_state():
     """Helper to reset zone states and event tracking limits"""
     global current_zone, zone_sl_count, total_strategy_trades, active_setup_type
-    global event_high, event_low, last_tp_hit_price, follow_through_direction
+    global event_high, event_low, last_tp_hit_price, follow_through_direction, zone1_ref_level
     current_zone = 1
     zone_sl_count = 0
     total_strategy_trades = 0
@@ -144,12 +147,13 @@ def reset_event_state():
     event_low = None
     last_tp_hit_price = None
     follow_through_direction = None
+    zone1_ref_level = None
 
 def run_bot():
     global current_position, ACCOUNT_BALANCE, zone_sl_count, current_zone, total_strategy_trades
     global event_high, event_low, event_finished, INITIALIZED, m_invalid_alert_sent
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
-    global last_tp_hit_price, follow_through_direction
+    global last_tp_hit_price, follow_through_direction, zone1_ref_level
 
     print("🚀 Aman's Precision Master Strategy Bot Started...")
     send_telegram("🚀 *Master Paper Trading Bot Started Live on Render!*")
@@ -392,6 +396,10 @@ def run_bot():
                     entry_tf = ""
                     ref_price = float(d_klines[-2][4])
 
+                    # Lock reference price for Zone 1
+                    if current_zone == 1 and zone1_ref_level is None:
+                        zone1_ref_level = ref_price
+
                     # --- FOLLOW-THROUGH LOGIC EVALUATION ---
                     if last_tp_hit_price is not None and follow_through_direction is not None:
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
@@ -478,16 +486,23 @@ def run_bot():
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        qty = FIXED_RISK_USD / SL_POINTS  # $100 / 200 = 0.5 BTC
+                        # --- AAPKA CUSTOM ENTRY, SL, AUR TP CALCULATION FIX ---
+                        if current_zone == 1 and zone1_ref_level is not None:
+                            entry_p = zone1_ref_level  # Fixed locked reference price (e.g., 78000)
+                        else:
+                            entry_p = btc_price  # Dynamic live price for other zones if needed
 
-                        sl = btc_price - SL_POINTS if side == "BUY" else btc_price + SL_POINTS
-                        tp = btc_price + TP_POINTS if side == "BUY" else btc_price - TP_POINTS
+                        # SL aur TP calculation fixed entry_p ke basis par
+                        sl_p = entry_p + 200.0 if side == "SELL" else entry_p - 200.0
+                        tp_p = entry_p - 2000.0 if side == "SELL" else entry_p + 2000.0
+
+                        qty = FIXED_RISK_USD / SL_POINTS  # $100 / 200 = 0.5 BTC
 
                         current_position = {
                             "side": side,
-                            "entry_price": btc_price,
-                            "sl_price": sl,
-                            "tp_price": tp,
+                            "entry_price": entry_p,
+                            "sl_price": sl_p,
+                            "tp_price": tp_p,
                             "qty": qty,
                             "reason": entry_reason,
                             "timeframe": entry_tf
@@ -506,9 +521,9 @@ def run_bot():
                                f"📌 *Entry Reason:* {entry_reason}\n"
                                f"⏱️ *Timeframe:* {entry_tf}\n"
                                f"📍 *Zone:* Zone {current_zone}\n\n"
-                               f"🎯 *Entry Level:* ${btc_price:.2f}\n"
-                               f"🛑 *Stop Loss (SL):* ${sl:.2f} (200 pts)\n"
-                               f"🎯 *Take Profit (TP):* ${tp:.2f} (1:10 RR)\n\n"
+                               f"🎯 *Entry Level:* ${entry_p:.2f}\n"
+                               f"🛑 *Stop Loss (SL):* ${sl_p:.2f} (200 pts)\n"
+                               f"🎯 *Take Profit (TP):* ${tp_p:.2f} (1:10 RR)\n\n"
                                f"💰 *Position Size:* {qty:.4f} BTC\n"
                                f"💵 *Fixed Capital Risk:* ${FIXED_RISK_USD:.2f}\n"
                                f"📊 *Account Balance:* ${ACCOUNT_BALANCE:.2f}")
@@ -520,7 +535,7 @@ def run_bot():
                             "script": "BTCUSDT",
                             "type": f"ENTRY_{side}",
                             "reason": entry_reason,
-                            "entry": round(btc_price, 2),
+                            "entry": round(entry_p, 2),
                             "risk": FIXED_RISK_USD,
                             "rr": "1:10",
                             "balance": round(ACCOUNT_BALANCE, 2)
