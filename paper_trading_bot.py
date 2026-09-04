@@ -82,8 +82,8 @@ def send_telegram(message):
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Telegram Send Error: {e}")
+    except Exception:
+        pass
 
 
 def log_to_sheet(data):
@@ -91,15 +91,15 @@ def log_to_sheet(data):
         return
     try:
         requests.post(GOOGLE_SHEET_WEBHOOK, json=data, timeout=5)
-    except Exception as e:
-        print(f"Google Sheet Log Error: {e}")
+    except Exception:
+        pass
 
 
 def fetch_btc_data():
     headers = {'User-Agent': 'Mozilla/5.0'}
     btc_price = None
 
-    # --- STEP 1: FETCH PRICE (Binance -> Bybit Fallback) ---
+    # --- STEP 1: FETCH PRICE (Binance -> Bybit Silent Fallback) ---
     try:
         ticker_url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
         ticker_res = requests.get(ticker_url, headers=headers, timeout=5).json()
@@ -108,12 +108,13 @@ def fetch_btc_data():
     except Exception:
         pass
 
-    # Backup API: Bybit (agar Binance Render IP ko limit kare)
+    # Backup API: Bybit (agar Binance IP block ya rate-limit ho)
     if btc_price is None:
         try:
             bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT"
             bybit_res = requests.get(bybit_url, headers=headers, timeout=5).json()
-            btc_price = float(bybit_res['result']['list'][0]['lastPrice'])
+            if isinstance(bybit_res, dict) and 'result' in bybit_res and 'list' in bybit_res['result']:
+                btc_price = float(bybit_res['result']['list'][0]['lastPrice'])
         except Exception:
             return None, None, None, None, None
 
@@ -128,14 +129,13 @@ def fetch_btc_data():
         m_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=5"
         m_klines = requests.get(m_url, headers=headers, timeout=5).json()
 
-        if not (isinstance(d_klines, list) and isinstance(w_klines, list) and isinstance(m_klines, list)):
-            return None, None, None, None, None
-
-        candle_time = d_klines[-1][0]
-        return btc_price, candle_time, d_klines, w_klines, m_klines
-
+        if isinstance(d_klines, list) and isinstance(w_klines, list) and isinstance(m_klines, list):
+            candle_time = d_klines[-1][0]
+            return btc_price, candle_time, d_klines, w_klines, m_klines
     except Exception:
-        return None, None, None, None, None
+        pass
+
+    return None, None, None, None, None
 
 
 def analyze_candle_structure(open_p, high_p, low_p, close_p):
@@ -185,7 +185,7 @@ def run_bot():
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
     global last_tp_hit_price, follow_through_direction, zone1_ref_level
 
-    print("🚀 Master Strategy Bot (with Pyramiding & Port Binding) Started...")
+    print("🚀 Master Strategy Bot Started...")
     send_telegram("🚀 *Master Trading Bot Active on Render!*")
 
     while True:
@@ -621,7 +621,7 @@ def run_bot():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Base Zone: {base_current_zone} | Pyr Zone: {pyramid_current_zone} | Active Setup: {active_setup_type}")
             time.sleep(10)
 
-        except Exception as e:
+        except Exception:
             time.sleep(10)
 
 
