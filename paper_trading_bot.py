@@ -2,166 +2,181 @@ import os
 import time
 import requests
 import threading
-from flask import Flask
-from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
 
-# --- FLASK SERVER FOR RENDER PORT BINDING ---
-app = Flask(__name__)
+# ==========================================
+# RENDER PORT BINDING (DUMMY SERVER)
+# ==========================================
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running active on Render!")
 
-@app.route('/')
-def health_check():
-    return "Aman's Master Precision Bot with Pyramiding is Active!"
+    def log_message(self, format, *args):
+        return  # Silence standard HTTP logs to keep console clean
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def start_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    server.serve_forever()
 
-# --- CONFIGURATION & ENV VARS ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8981662979:AAFg2MAiHOeYlK_bxbIXXLK9JdNSGqoksfc")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1862803975")
-SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com/macros/s/AKfycbwLHsJgFTMYwulKxxZaXtWQNP94ZAPoDiy54jDIWgXajnYyz9j-ZloFiIy8RxQfIBZnNw/exec")
+# Background thread for Render port health check
+threading.Thread(target=start_dummy_server, daemon=True).start()
 
-ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
-FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
-SL_POINTS = 200.0           # Fixed 200 Points SL
-TP_POINTS = 2000.0          # Fixed 1:10 RR Target (2000 Points from Main Entry)
 
-# Trailing Config
-TRAIL_TRIGGER_PTS = 1600.0
-TRAIL_LOCK_PTS = 600.0
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK", "")
 
-# Base Trade State Tracking
-current_position = None           # Main Position Dict
-base_zone_sl_count = 0            # Zone SL count for Base (0 to 3)
-base_current_zone = 1             # Base Zone (1, 2, 3)
-base_total_trades = 0             # Persistent SL counter for Base (Max 9)
+FIXED_RISK_USD = 100.0  # Fixed USD Risk per trade
+SL_POINTS = 200.0       # Standard Stop Loss points
+TRAIL_TRIGGER_PTS = 500.0
+TRAIL_LOCK_PTS = 200.0
 
-# Pyramiding State Tracking
-pyramid_position = None           # Pyramiding Position Dict
-pyramid_zone_sl_count = 0         # Zone SL count for Pyramiding (0 to 3)
-pyramid_current_zone = 1          # Pyramiding Zone (1, 2, 3)
-pyramid_total_trades = 0          # Persistent SL counter for Pyramiding (Max 9)
-pyramid_done_for_trade = False    # Single Pyramiding Flag per main trade
 
-active_setup_type = None          # Track active setup type
-event_finished = False            # Lock flag: Lockdown on Max Base SLs
-INITIALIZED = False               # Warmup guard for fresh deploy/restarts
-m_invalid_alert_sent = False      # Prevention for Telegram spamming
+# ==========================================
+# GLOBAL STATE VARIABLES
+# ==========================================
+ACCOUNT_BALANCE = 1000.0
+current_position = None
+pyramid_position = None
 
-# ZONE 1 FIXED REFERENCE LEVEL TRACKING
-zone1_ref_level = None
+base_zone_sl_count = 0
+base_current_zone = 1
+base_total_trades = 0
 
-# FOLLOW-THROUGH SPECIFIC TRACKING
-last_tp_hit_price = None
-follow_through_direction = None
+pyramid_zone_sl_count = 0
+pyramid_current_zone = 1
+pyramid_total_trades = 0
+pyramid_done_for_trade = False
 
-# EVENT SPECIFIC HIGH/LOW TRACKING
 event_high = None
 event_low = None
+event_finished = False
+INITIALIZED = False
+m_invalid_alert_sent = False
 
-# Tracking HTF Event IDs
-last_processed_event_id = None 
-
-# Re-entry Loop Prevention
+last_processed_event_id = None
 last_trade_candle_time = None
 last_trade_price = None
+active_setup_type = None
 
+last_tp_hit_price = None
+follow_through_direction = None
+zone1_ref_level = None
+
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram tokens not configured.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"Telegram Send Error: {e}")
+
 
 def log_to_sheet(data):
-    if not SHEET_WEBAPP_URL:
+    if not GOOGLE_SHEET_WEBHOOK:
         return
     try:
-        requests.post(SHEET_WEBAPP_URL, json=data, timeout=5)
+        requests.post(GOOGLE_SHEET_WEBHOOK, json=data, timeout=5)
     except Exception as e:
-        print(f"Sheet Error: {e}")
+        print(f"Google Sheet Log Error: {e}")
+
 
 def fetch_btc_data():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    btc_price = None
 
-    binance_vision = "https://data-api.binance.vision"
+    # --- STEP 1: FETCH PRICE (Binance -> Bybit Fallback) ---
     try:
-        r = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1", headers=headers, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            current_price = float(data[0][4])
-            candle_time = data[0][0]
-
-            d_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
-            w_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
-            m_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
-
-            return current_price, candle_time, d_data, w_data, m_data
+        ticker_url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+        ticker_res = requests.get(ticker_url, headers=headers, timeout=5).json()
+        if isinstance(ticker_res, dict) and 'price' in ticker_res:
+            btc_price = float(ticker_res['price'])
     except Exception:
         pass
 
+    # Backup API: Bybit (agar Binance Render IP ko limit kare)
+    if btc_price is None:
+        try:
+            bybit_url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT"
+            bybit_res = requests.get(bybit_url, headers=headers, timeout=5).json()
+            btc_price = float(bybit_res['result']['list'][0]['lastPrice'])
+        except Exception:
+            return None, None, None, None, None
+
+    # --- STEP 2: FETCH KLINES ---
     try:
-        cc_url = "https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USDT&limit=1"
-        r_cc = requests.get(cc_url, headers=headers, timeout=5).json()
-        current_price = float(r_cc['Data']['Data'][-1]['close'])
-        candle_time = r_cc['Data']['Data'][-1]['time'] * 1000
+        d_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5"
+        d_klines = requests.get(d_url, headers=headers, timeout=5).json()
 
-        d_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
-        w_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
-        m_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
+        w_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=5"
+        w_klines = requests.get(w_url, headers=headers, timeout=5).json()
 
-        return current_price, candle_time, d_data, w_data, m_data
-    except Exception as e:
-        print(f"Data Fetch Error: {e}")
+        m_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=5"
+        m_klines = requests.get(m_url, headers=headers, timeout=5).json()
+
+        if not (isinstance(d_klines, list) and isinstance(w_klines, list) and isinstance(m_klines, list)):
+            return None, None, None, None, None
+
+        candle_time = d_klines[-1][0]
+        return btc_price, candle_time, d_klines, w_klines, m_klines
+
+    except Exception:
         return None, None, None, None, None
+
 
 def analyze_candle_structure(open_p, high_p, low_p, close_p):
     total_range = high_p - low_p
     if total_range == 0:
-        return "NORMAL", 0.0
-        
+        return "NEUTRAL", 0.0
+
     body = abs(close_p - open_p)
     body_pct = (body / total_range) * 100
 
-    upper_wick_pct = ((high_p - max(open_p, close_p)) / total_range) * 100
-    lower_wick_pct = ((min(open_p, close_p) - low_p) / total_range) * 100
+    if body_pct >= 60.0:
+        return ("STRONG_BULL" if close_p > open_p else "STRONG_BEAR"), body_pct
+    elif body_pct <= 30.0:
+        return ("DICY_GREEN" if close_p > open_p else "DICY_RED"), body_pct
+    else:
+        return "NEUTRAL", body_pct
 
-    if upper_wick_pct >= 30.0 and close_p > open_p:
-        return "DICY_GREEN", upper_wick_pct
-    elif lower_wick_pct >= 30.0 and close_p < open_p:
-        return "DICY_RED", lower_wick_pct
-    elif body_pct <= 20.0 and upper_wick_pct >= 25.0 and lower_wick_pct >= 25.0:
-        return "DOJI", body_pct
-    elif body_pct >= 80.0:
-        return "STRONG_BULL" if close_p >= open_p else "STRONG_BEAR", body_pct
-    
-    return "NORMAL", body_pct
 
 def reset_event_state():
-    global base_current_zone, base_zone_sl_count, base_total_trades
-    global pyramid_current_zone, pyramid_zone_sl_count, pyramid_total_trades
-    global active_setup_type, event_high, event_low, last_tp_hit_price, follow_through_direction, zone1_ref_level
+    global base_zone_sl_count, base_current_zone, base_total_trades
+    global pyramid_zone_sl_count, pyramid_current_zone, pyramid_total_trades, pyramid_done_for_trade
+    global event_high, event_low, zone1_ref_level, active_setup_type
     
-    base_current_zone = 1
     base_zone_sl_count = 0
+    base_current_zone = 1
     base_total_trades = 0
-    
-    pyramid_current_zone = 1
+
     pyramid_zone_sl_count = 0
+    pyramid_current_zone = 1
     pyramid_total_trades = 0
-    
-    active_setup_type = None
+    pyramid_done_for_trade = False
+
     event_high = None
     event_low = None
-    last_tp_hit_price = None
-    follow_through_direction = None
     zone1_ref_level = None
+    active_setup_type = None
 
+
+# ==========================================
+# MAIN TRADING BOT LOOP
+# ==========================================
 def run_bot():
     global current_position, pyramid_position, ACCOUNT_BALANCE
     global base_zone_sl_count, base_current_zone, base_total_trades
@@ -170,8 +185,8 @@ def run_bot():
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
     global last_tp_hit_price, follow_through_direction, zone1_ref_level
 
-    print("🚀 Aman's Precision Master Strategy Bot (with Pyramiding) Started...")
-    send_telegram("🚀 *Master Trading Bot with Pyramiding Active on Render!*")
+    print("🚀 Master Strategy Bot (with Pyramiding & Port Binding) Started...")
+    send_telegram("🚀 *Master Trading Bot Active on Render!*")
 
     while True:
         try:
@@ -215,7 +230,7 @@ def run_bot():
                     if pyramid_trigger:
                         p_entry = btc_price
                         p_sl = p_entry - 200.0 if side == 'BUY' else p_entry + 200.0
-                        p_qty = FIXED_RISK_USD / SL_POINTS  # Same size (0.5 BTC)
+                        p_qty = FIXED_RISK_USD / SL_POINTS
 
                         pyramid_position = {
                             "side": side,
@@ -291,7 +306,6 @@ def run_bot():
                         pnl_main = qty * (tp_p - entry_p)
                         total_pnl = pnl_main
 
-                        # Close Pyramiding along with Main Target Hit
                         if pyramid_position is not None:
                             p_pnl = pyramid_position['qty'] * (tp_p - pyramid_position['entry_price'])
                             total_pnl += p_pnl
@@ -326,7 +340,6 @@ def run_bot():
                         base_zone_sl_count += 1
                         base_total_trades += 1
 
-                        # Force close Pyramiding position if Main SL hits first
                         if pyramid_position is not None:
                             p_loss = pyramid_position['qty'] * (pyramid_position['entry_price'] - btc_price)
                             total_loss += p_loss
@@ -554,7 +567,6 @@ def run_bot():
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        # --- ENTRY, SL, TP CALCULATION ---
                         if base_current_zone == 1 and zone1_ref_level is not None:
                             entry_p = zone1_ref_level
                         else:
@@ -610,9 +622,11 @@ def run_bot():
             time.sleep(10)
 
         except Exception as e:
-            print(f"Loop Error: {e}")
             time.sleep(10)
 
+
+# ==========================================
+# ENTRY POINT
+# ==========================================
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
     run_bot()
