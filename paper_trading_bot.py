@@ -1,7 +1,30 @@
 import os
 import time
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
+
+# ==========================================
+# RENDER PORT BINDING (DUMMY SERVER)
+# ==========================================
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running active on Render!")
+
+    def log_message(self, format, *args):
+        return  # Silence standard HTTP logs to keep console clean
+
+def start_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+# Background thread for Render port health check
+threading.Thread(target=start_dummy_server, daemon=True).start()
+
 
 # ==========================================
 # CONFIGURATION & CONSTANTS
@@ -14,6 +37,7 @@ FIXED_RISK_USD = 100.0  # Fixed USD Risk per trade
 SL_POINTS = 200.0       # Standard Stop Loss points
 TRAIL_TRIGGER_PTS = 500.0
 TRAIL_LOCK_PTS = 200.0
+
 
 # ==========================================
 # GLOBAL STATE VARIABLES
@@ -73,27 +97,38 @@ def log_to_sheet(data):
 
 def fetch_btc_data():
     try:
-        # Fetch current price
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        # 1. Fetch current price
         ticker_url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-        ticker_res = requests.get(ticker_url, timeout=5).json()
+        ticker_res = requests.get(ticker_url, headers=headers, timeout=5).json()
+        
+        if not isinstance(ticker_res, dict) or 'price' not in ticker_res:
+            return None, None, None, None, None
+
         btc_price = float(ticker_res['price'])
 
-        # Daily Klines
+        # 2. Daily Klines
         d_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5"
-        d_klines = requests.get(d_url, timeout=5).json()
+        d_klines = requests.get(d_url, headers=headers, timeout=5).json()
 
-        # Weekly Klines
+        # 3. Weekly Klines
         w_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=5"
-        w_klines = requests.get(w_url, timeout=5).json()
+        w_klines = requests.get(w_url, headers=headers, timeout=5).json()
 
-        # Monthly Klines
+        # 4. Monthly Klines
         m_url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=5"
-        m_klines = requests.get(m_url, timeout=5).json()
+        m_klines = requests.get(m_url, headers=headers, timeout=5).json()
+
+        # Validation check for list responses
+        if not (isinstance(d_klines, list) and isinstance(w_klines, list) and isinstance(m_klines, list)):
+            return None, None, None, None, None
 
         candle_time = d_klines[-1][0]
         return btc_price, candle_time, d_klines, w_klines, m_klines
-    except Exception as e:
-        print(f"Binance Fetch Error: {e}")
+
+    except Exception:
+        # Silently skip network glitches/rate-limits instead of throwing errors
         return None, None, None, None, None
 
 
@@ -144,8 +179,8 @@ def run_bot():
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
     global last_tp_hit_price, follow_through_direction, zone1_ref_level
 
-    print("🚀 Aman's Precision Master Strategy Bot (with Pyramiding) Started...")
-    send_telegram("🚀 *Master Trading Bot with Pyramiding Active on Render!*")
+    print("🚀 Master Strategy Bot (with Pyramiding & Port Binding) Started...")
+    send_telegram("🚀 *Master Trading Bot Active on Render!*")
 
     while True:
         try:
@@ -189,7 +224,7 @@ def run_bot():
                     if pyramid_trigger:
                         p_entry = btc_price
                         p_sl = p_entry - 200.0 if side == 'BUY' else p_entry + 200.0
-                        p_qty = FIXED_RISK_USD / SL_POINTS  # Same size (0.5 BTC)
+                        p_qty = FIXED_RISK_USD / SL_POINTS
 
                         pyramid_position = {
                             "side": side,
@@ -265,7 +300,6 @@ def run_bot():
                         pnl_main = qty * (tp_p - entry_p)
                         total_pnl = pnl_main
 
-                        # Close Pyramiding along with Main Target Hit
                         if pyramid_position is not None:
                             p_pnl = pyramid_position['qty'] * (tp_p - pyramid_position['entry_price'])
                             total_pnl += p_pnl
@@ -300,7 +334,6 @@ def run_bot():
                         base_zone_sl_count += 1
                         base_total_trades += 1
 
-                        # Force close Pyramiding position if Main SL hits first
                         if pyramid_position is not None:
                             p_loss = pyramid_position['qty'] * (pyramid_position['entry_price'] - btc_price)
                             total_loss += p_loss
@@ -528,7 +561,6 @@ def run_bot():
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        # --- ENTRY, SL, TP CALCULATION ---
                         if base_current_zone == 1 and zone1_ref_level is not None:
                             entry_p = zone1_ref_level
                         else:
@@ -584,8 +616,8 @@ def run_bot():
             time.sleep(10)
 
         except Exception as e:
-            print(f"Loop Error: {e}")
             time.sleep(10)
+
 
 # ==========================================
 # ENTRY POINT
