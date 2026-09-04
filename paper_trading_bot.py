@@ -542,7 +542,7 @@ def run_bot():
                         })
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Zone: {current_zone} | Event High: {event_high} | Event Low: {event_low} | Active Setup: {active_setup_type}")
-            time.sleep(300)
+            time.sleep(10)
 
         except Exception as e:
             print(f"Loop Error: {e}")
