@@ -216,7 +216,7 @@ def run_bot():
                         pyramid_trigger = True
 
                     if pyramid_trigger:
-                        # CRITICAL FIX: Lock state FIRST to prevent duplicate executions
+                        # STRICT ATOMIC LOCK
                         pyramid_done_for_trade = True
 
                         p_entry = btc_price
@@ -246,6 +246,8 @@ def run_bot():
                             "risk": FIXED_RISK_USD,
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
+                        
+                        time.sleep(2) # Cooldown buffer to prevent race conditions
 
                 # --- B. PYRAMIDING INDEPENDENT POSITION MANAGEMENT ---
                 if pyramid_position is not None:
@@ -262,6 +264,9 @@ def run_bot():
                         pyramid_zone_sl_count += 1
                         pyramid_total_trades += 1
 
+                        # Immediately Clear Pyramid Position before Async HTTP Calls
+                        pyramid_position = None
+
                         send_telegram(f"❌ *PYRAMID STOP LOSS HIT!*\nLoss: -${loss:.2f}\nPyramid Zone {pyramid_current_zone} SL Count: {pyramid_zone_sl_count}/3\nTotal Pyramid Setup Trades: {pyramid_total_trades}/9")
                         
                         log_to_sheet({
@@ -272,8 +277,6 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        pyramid_position = None
-
                         if pyramid_zone_sl_count >= 3:
                             if pyramid_current_zone < 3:
                                 pyramid_current_zone += 1
@@ -281,6 +284,8 @@ def run_bot():
                                 send_telegram(f"⚠️ *Pyramid Zone Shift!* Switched to Pyramid Zone {pyramid_current_zone}")
                             else:
                                 send_telegram(f"🚨 *All 3 Pyramid Zones Failed (Max 9 SLs Hit)!* Pyramiding disabled for current HTF event.")
+
+                        time.sleep(2)
 
                 # --- C. MAIN POSITION TRAILING & TARGET MANAGEMENT ---
                 if side == 'BUY':
@@ -296,7 +301,6 @@ def run_bot():
                         pnl_main = qty * (tp_p - entry_p)
                         total_pnl = pnl_main
 
-                        # Close Pyramiding along with Main Target Hit
                         if pyramid_position is not None:
                             p_pnl = pyramid_position['qty'] * (tp_p - pyramid_position['entry_price'])
                             total_pnl += p_pnl
@@ -307,7 +311,14 @@ def run_bot():
                         
                         last_tp_hit_price = tp_p
                         follow_through_direction = "BUY"
-                        
+
+                        # Clear Main Position State First
+                        current_position = None
+                        pyramid_done_for_trade = False
+                        base_current_zone = 1
+                        base_zone_sl_count = 0
+                        base_total_trades = 0
+
                         send_telegram(f"🎯 *TARGET HIT (BUY)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Follow-Through Entry (+200 pts).*")
                         
                         log_to_sheet({
@@ -318,11 +329,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        current_position = None
-                        pyramid_done_for_trade = False
-                        base_current_zone = 1
-                        base_zone_sl_count = 0
-                        base_total_trades = 0
+                        time.sleep(2)
 
                     # MAIN STOP LOSS HIT
                     elif btc_price <= sl_p:
@@ -331,7 +338,6 @@ def run_bot():
                         base_zone_sl_count += 1
                         base_total_trades += 1
 
-                        # Force close Pyramiding position if Main SL hits first
                         if pyramid_position is not None:
                             p_loss = pyramid_position['qty'] * (pyramid_position['entry_price'] - btc_price)
                             total_loss += p_loss
@@ -343,6 +349,9 @@ def run_bot():
                         last_tp_hit_price = None
                         follow_through_direction = None
 
+                        current_position = None
+                        pyramid_done_for_trade = False
+
                         send_telegram(f"❌ *STOP LOSS HIT (BUY)!*\nTotal Loss: -${total_loss:.2f}\nBase Zone {base_current_zone} SL Count: {base_zone_sl_count}/3\nTotal Base Trades: {base_total_trades}/9")
                         
                         log_to_sheet({
@@ -353,8 +362,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        current_position = None
-                        pyramid_done_for_trade = False
+                        time.sleep(2)
 
                 elif side == 'SELL':
                     max_favorable = entry_p - btc_price
@@ -380,6 +388,12 @@ def run_bot():
                         last_tp_hit_price = tp_p
                         follow_through_direction = "SELL"
 
+                        current_position = None
+                        pyramid_done_for_trade = False
+                        base_current_zone = 1
+                        base_zone_sl_count = 0
+                        base_total_trades = 0
+
                         send_telegram(f"🎯 *TARGET HIT (SELL)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Follow-Through Entry (-200 pts).*")
                         
                         log_to_sheet({
@@ -390,11 +404,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        current_position = None
-                        pyramid_done_for_trade = False
-                        base_current_zone = 1
-                        base_zone_sl_count = 0
-                        base_total_trades = 0
+                        time.sleep(2)
 
                     # MAIN STOP LOSS HIT
                     elif btc_price >= sl_p:
@@ -414,6 +424,9 @@ def run_bot():
                         last_tp_hit_price = None
                         follow_through_direction = None
 
+                        current_position = None
+                        pyramid_done_for_trade = False
+
                         send_telegram(f"❌ *STOP LOSS HIT (SELL)!*\nTotal Loss: -${total_loss:.2f}\nBase Zone {base_current_zone} SL Count: {base_zone_sl_count}/3\nTotal Base Trades: {base_total_trades}/9")
                         
                         log_to_sheet({
@@ -424,8 +437,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        current_position = None
-                        pyramid_done_for_trade = False
+                        time.sleep(2)
 
                 # BASE ZONE SHIFT EVALUATION AFTER SL HIT
                 if base_zone_sl_count >= 3:
@@ -468,7 +480,6 @@ def run_bot():
                     current_detected_setup = "WEEKLY_DOJI"
                 elif monthly_dist <= 2000.0:
                     current_detected_setup = "MONTHLY_DOJI"
-                # CRITICAL FIX: Specific Timeframe Labels added for Strong/Dicy setups
                 elif w_type == "STRONG_BULL":
                     current_detected_setup = "STRONG_BULL_WEEKLY"
                 elif m_type == "STRONG_BULL":
@@ -570,6 +581,10 @@ def run_bot():
                     is_same_level = (last_trade_price is not None and abs(btc_price - last_trade_price) < 50.0)
 
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
+                        # Strict Secondary Check
+                        if current_position is not None:
+                            continue
+
                         side = "BUY" if buy_trigger else "SELL"
                         
                         # --- ENTRY, SL, TP CALCULATION ---
@@ -583,7 +598,7 @@ def run_bot():
 
                         qty = FIXED_RISK_USD / SL_POINTS
 
-                        # CRITICAL FIX: Lock current_position INSTANTLY before Telegram call
+                        # ATOMIC POSITION LOCK BEFORE TELEGRAM/SHEETS REQUESTS
                         current_position = {
                             "side": side,
                             "entry_price": entry_p,
@@ -624,6 +639,8 @@ def run_bot():
                             "risk": FIXED_RISK_USD,
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
+
+                        time.sleep(2) # Cooldown buffer to prevent fast-loop race conditions
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Base Zone: {base_current_zone} | Pyr Zone: {pyramid_current_zone} | Active Setup: {active_setup_type}")
             time.sleep(10)
