@@ -23,7 +23,7 @@ SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "https://script.google.com
 
 ACCOUNT_BALANCE = 10000.0   # Initial Paper Trading Capital ($)
 FIXED_RISK_USD = 100.0      # Fixed $100 Risk per trade
-SL_POINTS = 200.0           # Fixed 200 Points SL
+SL_POINTS = 200.0            # Fixed 200 Points SL
 TP_POINTS = 2000.0          # Fixed 1:10 RR Target (2000 Points from Main Entry)
 
 # Trailing Config
@@ -97,13 +97,14 @@ def fetch_btc_data():
             current_price = float(data[0][4])
             candle_time = data[0][0]
 
-            d_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
-            w_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
-            m_data = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
+            d_res = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5)
+            w_res = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5)
+            m_res = requests.get(f"{binance_vision}/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5)
 
-            return current_price, candle_time, d_data, w_data, m_data
-    except Exception:
-        pass
+            if d_res.status_code == 200 and w_res.status_code == 200 and m_res.status_code == 200:
+                return current_price, candle_time, d_res.json(), w_res.json(), m_res.json()
+    except Exception as e:
+        print(f"Binance Vision Fetch Fail: {e}")
 
     try:
         cc_url = "https://min-api.cryptocompare.com/data/v2/histominute?fsym=BTC&tsym=USDT&limit=1"
@@ -111,14 +112,16 @@ def fetch_btc_data():
         current_price = float(r_cc['Data']['Data'][-1]['close'])
         candle_time = r_cc['Data']['Data'][-1]['time'] * 1000
 
-        d_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5).json()
-        w_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5).json()
-        m_data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5).json()
+        d_res = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", headers=headers, timeout=5)
+        w_res = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=3", headers=headers, timeout=5)
+        m_res = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1M&limit=3", headers=headers, timeout=5)
 
-        return current_price, candle_time, d_data, w_data, m_data
+        if d_res.status_code == 200 and w_res.status_code == 200 and m_res.status_code == 200:
+            return current_price, candle_time, d_res.json(), w_res.json(), m_res.json()
     except Exception as e:
-        print(f"Data Fetch Error: {e}")
-        return None, None, None, None, None
+        print(f"Data Fetch Fallback Error: {e}")
+
+    return None, None, None, None, None
 
 def analyze_candle_structure(open_p, high_p, low_p, close_p):
     total_range = high_p - low_p
