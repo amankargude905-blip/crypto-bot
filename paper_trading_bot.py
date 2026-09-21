@@ -216,6 +216,9 @@ def run_bot():
                         pyramid_trigger = True
 
                     if pyramid_trigger:
+                        # CRITICAL FIX: Lock state FIRST to prevent duplicate executions
+                        pyramid_done_for_trade = True
+
                         p_entry = btc_price
                         p_sl = p_entry - 200.0 if side == 'BUY' else p_entry + 200.0
                         p_qty = FIXED_RISK_USD / SL_POINTS  # Same size (0.5 BTC)
@@ -226,7 +229,6 @@ def run_bot():
                             "sl_price": p_sl,
                             "qty": p_qty
                         }
-                        pyramid_done_for_trade = True
 
                         msg_pyr = (f"🔺 *PYRAMIDING TRADE EXECUTED ({side})*\n\n"
                                    f"📍 *Entry Price:* ${p_entry:.2f} (+500 pts move from Base)\n"
@@ -466,14 +468,23 @@ def run_bot():
                     current_detected_setup = "WEEKLY_DOJI"
                 elif monthly_dist <= 2000.0:
                     current_detected_setup = "MONTHLY_DOJI"
-                elif w_type == "STRONG_BULL" or m_type == "STRONG_BULL":
-                    current_detected_setup = "STRONG_BULL"
-                elif w_type == "STRONG_BEAR" or m_type == "STRONG_BEAR":
-                    current_detected_setup = "STRONG_BEAR"
-                elif w_type == "DICY_GREEN" or m_type == "DICY_GREEN":
-                    current_detected_setup = "DICY_GREEN"
-                elif w_type == "DICY_RED" or m_type == "DICY_RED":
-                    current_detected_setup = "DICY_RED"
+                # CRITICAL FIX: Specific Timeframe Labels added for Strong/Dicy setups
+                elif w_type == "STRONG_BULL":
+                    current_detected_setup = "STRONG_BULL_WEEKLY"
+                elif m_type == "STRONG_BULL":
+                    current_detected_setup = "STRONG_BULL_MONTHLY"
+                elif w_type == "STRONG_BEAR":
+                    current_detected_setup = "STRONG_BEAR_WEEKLY"
+                elif m_type == "STRONG_BEAR":
+                    current_detected_setup = "STRONG_BEAR_MONTHLY"
+                elif w_type == "DICY_GREEN":
+                    current_detected_setup = "DICY_GREEN_WEEKLY"
+                elif m_type == "DICY_GREEN":
+                    current_detected_setup = "DICY_GREEN_MONTHLY"
+                elif w_type == "DICY_RED":
+                    current_detected_setup = "DICY_RED_WEEKLY"
+                elif m_type == "DICY_RED":
+                    current_detected_setup = "DICY_RED_MONTHLY"
 
                 if active_setup_type is not None and current_detected_setup != active_setup_type:
                     send_telegram(f"🔄 *Candle Structure Changed!* ({active_setup_type} ➡️ {current_detected_setup}). Resetting setup counters.")
@@ -481,13 +492,13 @@ def run_bot():
                     active_setup_type = current_detected_setup
 
                 m_invalidated = False
-                if m_type == "DICY_GREEN" and btc_price >= (m_open + 3000.0):
+                if "DICY_GREEN" in str(m_type) and btc_price >= (m_open + 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
                         send_telegram(f"🚨 *Monthly Dicy Green Invalidated!* Unlocking scanning...")
                         m_invalid_alert_sent = True
 
-                elif m_type == "DICY_RED" and btc_price <= (m_open - 3000.0):
+                elif "DICY_RED" in str(m_type) and btc_price <= (m_open - 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
                         send_telegram(f"🚨 *Monthly Dicy Red Invalidated!* Unlocking scanning...")
@@ -536,14 +547,18 @@ def run_bot():
                             elif current_detected_setup == "MONTHLY_DOJI":
                                 if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = "Zone 1: Monthly Doji Breakout"
                                 elif btc_price <= ref_price - 500: sell_trigger = True; entry_reason = "Zone 1: Monthly Doji Breakout"
-                            elif current_detected_setup == "STRONG_BULL":
-                                if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = "Zone 1: Strong Bullish Breakout"
-                            elif current_detected_setup == "STRONG_BEAR":
-                                if btc_price <= ref_price - 500: sell_trigger = True; entry_reason = "Zone 1: Strong Bearish Breakout"
-                            elif current_detected_setup == "DICY_GREEN" and not m_invalidated:
-                                if btc_price <= ref_price - 500: sell_trigger = True; entry_reason = "Zone 1: Dicy Green Trap Setup"
-                            elif current_detected_setup == "DICY_RED" and not m_invalidated:
-                                if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = "Zone 1: Dicy Red Trap Setup"
+                            elif current_detected_setup and "STRONG_BULL" in current_detected_setup:
+                                tf_label = "Weekly" if "WEEKLY" in current_detected_setup else "Monthly"
+                                if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = f"Zone 1: Strong Bullish Breakout ({tf_label})"
+                            elif current_detected_setup and "STRONG_BEAR" in current_detected_setup:
+                                tf_label = "Weekly" if "WEEKLY" in current_detected_setup else "Monthly"
+                                if btc_price <= ref_price - 500: sell_trigger = True; entry_reason = f"Zone 1: Strong Bearish Breakout ({tf_label})"
+                            elif current_detected_setup and "DICY_GREEN" in current_detected_setup and not m_invalidated:
+                                tf_label = "Weekly" if "WEEKLY" in current_detected_setup else "Monthly"
+                                if btc_price <= ref_price - 500: sell_trigger = True; entry_reason = f"Zone 1: Dicy Green Trap Setup ({tf_label})"
+                            elif current_detected_setup and "DICY_RED" in current_detected_setup and not m_invalidated:
+                                tf_label = "Weekly" if "WEEKLY" in current_detected_setup else "Monthly"
+                                if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = f"Zone 1: Dicy Red Trap Setup ({tf_label})"
 
                         elif base_current_zone in [2, 3]:
                             if prev_event_high is not None and btc_price >= prev_event_high: 
@@ -568,6 +583,7 @@ def run_bot():
 
                         qty = FIXED_RISK_USD / SL_POINTS
 
+                        # CRITICAL FIX: Lock current_position INSTANTLY before Telegram call
                         current_position = {
                             "side": side,
                             "entry_price": entry_p,
