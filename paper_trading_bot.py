@@ -51,9 +51,10 @@ m_invalid_alert_sent = False      # Prevention for Telegram spamming
 # ZONE 1 FIXED REFERENCE LEVEL TRACKING
 zone1_ref_level = None
 
-# FOLLOW-THROUGH SPECIFIC TRACKING
+# FOLLOW-THROUGH SPECIFIC TRACKING (WITH STRICT LOCK)
 last_tp_hit_price = None
 follow_through_direction = None
+follow_through_consumed = False
 
 # EVENT SPECIFIC HIGH/LOW TRACKING
 event_high = None
@@ -148,7 +149,7 @@ def analyze_candle_structure(open_p, high_p, low_p, close_p):
 def reset_event_state():
     global base_current_zone, base_zone_sl_count, base_total_trades
     global pyramid_current_zone, pyramid_zone_sl_count, pyramid_total_trades
-    global active_setup_type, event_high, event_low, last_tp_hit_price, follow_through_direction, zone1_ref_level
+    global active_setup_type, event_high, event_low, last_tp_hit_price, follow_through_direction, zone1_ref_level, follow_through_consumed
     
     base_current_zone = 1
     base_zone_sl_count = 0
@@ -163,6 +164,7 @@ def reset_event_state():
     event_low = None
     last_tp_hit_price = None
     follow_through_direction = None
+    follow_through_consumed = False
     zone1_ref_level = None
 
 def run_bot():
@@ -171,10 +173,10 @@ def run_bot():
     global pyramid_zone_sl_count, pyramid_current_zone, pyramid_total_trades, pyramid_done_for_trade
     global event_high, event_low, event_finished, INITIALIZED, m_invalid_alert_sent
     global last_processed_event_id, last_trade_candle_time, last_trade_price, active_setup_type
-    global last_tp_hit_price, follow_through_direction, zone1_ref_level
+    global last_tp_hit_price, follow_through_direction, zone1_ref_level, follow_through_consumed
 
-    print("🚀 Aman's Precision Master Strategy Bot (with Pyramiding) Started...")
-    send_telegram("🚀 *Master Trading Bot with Pyramiding Active on Render!*")
+    print("🚀 Aman's Precision Master Strategy Bot (Fixed Candle Engine) Started...")
+    send_telegram("🚀 *Master Trading Bot (Fixed Engine) Active on Render!*")
 
     while True:
         try:
@@ -193,9 +195,6 @@ def run_bot():
                 continue
 
             # TRACK HIGH AND LOW FROM EVENT START TIME
-            prev_event_high = event_high
-            prev_event_low = event_low
-
             event_high = btc_price if event_high is None else max(event_high, btc_price)
             event_low = btc_price if event_low is None else min(event_low, btc_price)
 
@@ -216,12 +215,11 @@ def run_bot():
                         pyramid_trigger = True
 
                     if pyramid_trigger:
-                        # STRICT ATOMIC LOCK
                         pyramid_done_for_trade = True
 
                         p_entry = btc_price
                         p_sl = p_entry - 200.0 if side == 'BUY' else p_entry + 200.0
-                        p_qty = FIXED_RISK_USD / SL_POINTS  # Same size (0.5 BTC)
+                        p_qty = FIXED_RISK_USD / SL_POINTS
 
                         pyramid_position = {
                             "side": side,
@@ -247,7 +245,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
                         
-                        time.sleep(2) # Cooldown buffer to prevent race conditions
+                        time.sleep(2)
 
                 # --- B. PYRAMIDING INDEPENDENT POSITION MANAGEMENT ---
                 if pyramid_position is not None:
@@ -263,8 +261,6 @@ def run_bot():
                         ACCOUNT_BALANCE -= loss
                         pyramid_zone_sl_count += 1
                         pyramid_total_trades += 1
-
-                        # Immediately Clear Pyramid Position before Async HTTP Calls
                         pyramid_position = None
 
                         send_telegram(f"❌ *PYRAMID STOP LOSS HIT!*\nLoss: -${loss:.2f}\nPyramid Zone {pyramid_current_zone} SL Count: {pyramid_zone_sl_count}/3\nTotal Pyramid Setup Trades: {pyramid_total_trades}/9")
@@ -309,17 +305,18 @@ def run_bot():
 
                         ACCOUNT_BALANCE += total_pnl
                         
+                        # Enable Follow-Through State (Single-Use Lock)
                         last_tp_hit_price = tp_p
                         follow_through_direction = "BUY"
+                        follow_through_consumed = False
 
-                        # Clear Main Position State First
                         current_position = None
                         pyramid_done_for_trade = False
                         base_current_zone = 1
                         base_zone_sl_count = 0
                         base_total_trades = 0
 
-                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Follow-Through Entry (+200 pts).*")
+                        send_telegram(f"🎯 *TARGET HIT (BUY)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Single Follow-Through Entry (+200 pts).*")
                         
                         log_to_sheet({
                             "script": "BTCUSDT",
@@ -348,6 +345,7 @@ def run_bot():
 
                         last_tp_hit_price = None
                         follow_through_direction = None
+                        follow_through_consumed = False
 
                         current_position = None
                         pyramid_done_for_trade = False
@@ -385,8 +383,10 @@ def run_bot():
 
                         ACCOUNT_BALANCE += total_pnl
 
+                        # Enable Follow-Through State (Single-Use Lock)
                         last_tp_hit_price = tp_p
                         follow_through_direction = "SELL"
+                        follow_through_consumed = False
 
                         current_position = None
                         pyramid_done_for_trade = False
@@ -394,7 +394,7 @@ def run_bot():
                         base_zone_sl_count = 0
                         base_total_trades = 0
 
-                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Follow-Through Entry (-200 pts).*")
+                        send_telegram(f"🎯 *TARGET HIT (SELL)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}\n🚀 *Standing by for Single Follow-Through Entry (-200 pts).*")
                         
                         log_to_sheet({
                             "script": "BTCUSDT",
@@ -423,6 +423,7 @@ def run_bot():
 
                         last_tp_hit_price = None
                         follow_through_direction = None
+                        follow_through_consumed = False
 
                         current_position = None
                         pyramid_done_for_trade = False
@@ -439,7 +440,7 @@ def run_bot():
 
                         time.sleep(2)
 
-                # BASE ZONE SHIFT EVALUATION AFTER SL HIT
+                # BASE ZONE SHIFT EVALUATION
                 if base_zone_sl_count >= 3:
                     if base_current_zone < 3:
                         base_current_zone += 1
@@ -460,20 +461,21 @@ def run_bot():
                 day2_close = float(d_klines[-2][4])
                 day2_diff = abs(day2_open - day2_close)
 
+                # STRICT COMPLETED CANDLE ANALYSIS (INDEX [-2])
                 w_open = float(w_klines[-2][1])
                 w_close = float(w_klines[-2][4])
                 weekly_dist = abs(w_open - w_close)
 
-                m_open = float(m_klines[-1][1])
-                m_prev_open = float(m_klines[-2][1])
-                m_prev_close = float(m_klines[-2][4])
-                monthly_dist = abs(m_prev_open - m_prev_close)
+                m_open = float(m_klines[-2][1])
+                m_close = float(m_klines[-2][4])
+                monthly_dist = abs(m_open - m_close)
 
                 w_type, _ = analyze_candle_structure(float(w_klines[-2][1]), float(w_klines[-2][2]), float(w_klines[-2][3]), float(w_klines[-2][4]))
                 m_type, _ = analyze_candle_structure(float(m_klines[-2][1]), float(m_klines[-2][2]), float(m_klines[-2][3]), float(m_klines[-2][4]))
 
                 current_detected_setup = None
                 
+                # HTF Evaluation Priority
                 if day1_diff < 300.0 and day2_diff < 300.0:
                     current_detected_setup = "2_DOJI"
                 elif weekly_dist <= 1200.0:
@@ -482,10 +484,10 @@ def run_bot():
                     current_detected_setup = "MONTHLY_DOJI"
                 elif w_type == "STRONG_BULL":
                     current_detected_setup = "STRONG_BULL_WEEKLY"
-                elif m_type == "STRONG_BULL":
-                    current_detected_setup = "STRONG_BULL_MONTHLY"
                 elif w_type == "STRONG_BEAR":
                     current_detected_setup = "STRONG_BEAR_WEEKLY"
+                elif m_type == "STRONG_BULL":
+                    current_detected_setup = "STRONG_BULL_MONTHLY"
                 elif m_type == "STRONG_BEAR":
                     current_detected_setup = "STRONG_BEAR_MONTHLY"
                 elif w_type == "DICY_GREEN":
@@ -503,13 +505,14 @@ def run_bot():
                     active_setup_type = current_detected_setup
 
                 m_invalidated = False
-                if "DICY_GREEN" in str(m_type) and btc_price >= (m_open + 3000.0):
+                cur_m_open = float(m_klines[-1][1])
+                if "DICY_GREEN" in str(m_type) and btc_price >= (cur_m_open + 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
                         send_telegram(f"🚨 *Monthly Dicy Green Invalidated!* Unlocking scanning...")
                         m_invalid_alert_sent = True
 
-                elif "DICY_RED" in str(m_type) and btc_price <= (m_open - 3000.0):
+                elif "DICY_RED" in str(m_type) and btc_price <= (cur_m_open - 3000.0):
                     m_invalidated = True
                     if not m_invalid_alert_sent:
                         send_telegram(f"🚨 *Monthly Dicy Red Invalidated!* Unlocking scanning...")
@@ -535,16 +538,18 @@ def run_bot():
                     if base_current_zone == 1 and zone1_ref_level is None:
                         zone1_ref_level = ref_price
 
-                    # --- FOLLOW-THROUGH LOGIC EVALUATION ---
-                    if last_tp_hit_price is not None and follow_through_direction is not None:
+                    # --- SINGLE-USE FOLLOW-THROUGH LOGIC EVALUATION ---
+                    if last_tp_hit_price is not None and follow_through_direction is not None and not follow_through_consumed:
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
                             buy_trigger = True
                             entry_reason = f"Follow-Through BUY Breakout (+200 pts above Prev TP ${last_tp_hit_price:.2f})"
                             entry_tf = "Trend Continuation"
+                            follow_through_consumed = True # Lock to prevent re-trigger loop
                         elif follow_through_direction == "SELL" and btc_price <= (last_tp_hit_price - 200.0):
                             sell_trigger = True
                             entry_reason = f"Follow-Through SELL Breakout (-200 pts below Prev TP ${last_tp_hit_price:.2f})"
                             entry_tf = "Trend Continuation"
+                            follow_through_consumed = True # Lock to prevent re-trigger loop
 
                     # --- STANDARD ENTRY LOGIC ---
                     if not buy_trigger and not sell_trigger:
@@ -572,22 +577,20 @@ def run_bot():
                                 if btc_price >= ref_price + 500: buy_trigger = True; entry_reason = f"Zone 1: Dicy Red Trap Setup ({tf_label})"
 
                         elif base_current_zone in [2, 3]:
-                            if prev_event_high is not None and btc_price >= prev_event_high: 
+                            if event_high is not None and btc_price >= event_high: 
                                 buy_trigger = True; entry_reason = f"Base Zone {base_current_zone}: Event High Breakout"
-                            elif prev_event_low is not None and btc_price <= prev_event_low: 
+                            elif event_low is not None and btc_price <= event_low: 
                                 sell_trigger = True; entry_reason = f"Base Zone {base_current_zone}: Event Low Breakout"
 
                     is_same_candle = (candle_time == last_trade_candle_time)
                     is_same_level = (last_trade_price is not None and abs(btc_price - last_trade_price) < 50.0)
 
                     if (buy_trigger or sell_trigger) and not (is_same_candle and is_same_level):
-                        # Strict Secondary Check
                         if current_position is not None:
                             continue
 
                         side = "BUY" if buy_trigger else "SELL"
                         
-                        # --- ENTRY, SL, TP CALCULATION ---
                         if base_current_zone == 1 and zone1_ref_level is not None:
                             entry_p = zone1_ref_level
                         else:
@@ -598,7 +601,6 @@ def run_bot():
 
                         qty = FIXED_RISK_USD / SL_POINTS
 
-                        # ATOMIC POSITION LOCK BEFORE TELEGRAM/SHEETS REQUESTS
                         current_position = {
                             "side": side,
                             "entry_price": entry_p,
@@ -609,6 +611,7 @@ def run_bot():
                             "timeframe": entry_tf
                         }
 
+                        # Reset Follow-Through Variables After Trade Consumption
                         last_tp_hit_price = None
                         follow_through_direction = None
                         pyramid_done_for_trade = False
@@ -640,7 +643,7 @@ def run_bot():
                             "balance": round(ACCOUNT_BALANCE, 2)
                         })
 
-                        time.sleep(2) # Cooldown buffer to prevent fast-loop race conditions
+                        time.sleep(2)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Price: ${btc_price:.2f} | Pos: {current_position['side'] if current_position else 'None'} | Base Zone: {base_current_zone} | Pyr Zone: {pyramid_current_zone} | Active Setup: {active_setup_type}")
             time.sleep(10)
