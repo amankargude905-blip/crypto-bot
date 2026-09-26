@@ -90,6 +90,38 @@ def send_telegram_safe(message):
     except Exception as e:
         print(f"Telegram Exception Caught: {e}")
 
+def check_telegram_updates():
+    """Polls Telegram for /start command"""
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    
+    offset = None
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    
+    while True:
+        try:
+            params = {"timeout": 10, "offset": offset}
+            res = requests.get(url, params=params, timeout=15)
+            if res.status_code == 200:
+                data = res.json()
+                for result in data.get("result", []):
+                    offset = result["update_id"] + 1
+                    message = result.get("message", {})
+                    text = message.get("text", "")
+                    
+                    if text == "/start":
+                        pos_info = current_position['side'] if current_position else 'None'
+                        send_telegram_safe(
+                            "👋 *Aman's BTC Live Trading Bot Connected!*\n\n"
+                            f"📊 *Status:* Active & Monitoring\n"
+                            f"📍 *Active Position:* {pos_info}\n"
+                            f"💰 *Testing Balance:* ${ACCOUNT_BALANCE:.2f}\n"
+                            f"⚡ *Min Quantity:* {MIN_QTY} BTC"
+                        )
+        except Exception as e:
+            print(f"Telegram Listener Error: {e}")
+        time.sleep(3)
+
 def log_to_sheet(data):
     if not SHEET_WEBAPP_URL:
         return
@@ -543,4 +575,5 @@ def run_bot():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=check_telegram_updates, daemon=True).start()
     run_bot()
