@@ -3,8 +3,7 @@ import time
 import requests
 import threading
 from flask import Flask
-from datetime import datetime, timezone
-import ccxt
+from datetime import datetime
 
 # --- FLASK SERVER FOR RENDER PORT BINDING ---
 app = Flask(__name__)
@@ -18,8 +17,8 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
-TELEGRAM_BOT_TOKEN = os.environ.get("8973835529:AAE3kDQTY_RGdztTmfhHFNzDimm7t784Vr0", "")
-TELEGRAM_CHAT_ID = os.environ.get("8973835529", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 EXCHANGE_API_KEY = os.environ.get("EXCHANGE_API_KEY", "")
 EXCHANGE_SECRET_KEY = os.environ.get("EXCHANGE_SECRET_KEY", "")
 SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "")
@@ -55,7 +54,7 @@ m_invalid_alert_sent = False
 
 zone1_ref_level = None
 
-# FOLLOW-THROUGH SPECIFIC TRACKING (WITH STRICT SINGLE-TRIGGER LOCK)
+# FOLLOW-THROUGH SPECIFIC TRACKING
 last_tp_hit_price = None
 follow_through_direction = None
 follow_through_consumed = False
@@ -66,19 +65,6 @@ event_low = None
 last_processed_event_id = None 
 last_trade_candle_time = None
 last_trade_price = None
-
-# CCXT Exchange Instance Setup (Binance Futures)
-exchange = None
-if EXCHANGE_API_KEY and EXCHANGE_SECRET_KEY:
-    try:
-        exchange = ccxt.binance({
-            'apiKey': EXCHANGE_API_KEY,
-            'secret': EXCHANGE_SECRET_KEY,
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
-        })
-    except Exception as e:
-        print(f"Exchange Init Error: {e}")
 
 def send_telegram_safe(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -91,7 +77,7 @@ def send_telegram_safe(message):
         print(f"Telegram Exception Caught: {e}")
 
 def check_telegram_updates():
-    """Polls Telegram for /start command"""
+    """Polls Telegram for /start command directly via API"""
     if not TELEGRAM_BOT_TOKEN:
         return
     
@@ -100,7 +86,10 @@ def check_telegram_updates():
     
     while True:
         try:
-            params = {"timeout": 10, "offset": offset}
+            params = {"timeout": 10}
+            if offset:
+                params["offset"] = offset
+                
             res = requests.get(url, params=params, timeout=15)
             if res.status_code == 200:
                 data = res.json()
@@ -113,7 +102,7 @@ def check_telegram_updates():
                         pos_info = current_position['side'] if current_position else 'None'
                         send_telegram_safe(
                             "👋 *Aman's BTC Live Trading Bot Connected!*\n\n"
-                            f"📊 *Status:* Active & Monitoring\n"
+                            f"📊 *Status:* Active & Listening\n"
                             f"📍 *Active Position:* {pos_info}\n"
                             f"💰 *Testing Balance:* ${ACCOUNT_BALANCE:.2f}\n"
                             f"⚡ *Min Quantity:* {MIN_QTY} BTC"
@@ -129,79 +118,6 @@ def log_to_sheet(data):
         requests.post(SHEET_WEBAPP_URL, json=data, timeout=5)
     except Exception as e:
         print(f"Sheet Error: {e}")
-
-def place_real_order(symbol, side, qty, price, sl_price, tp_price):
-    """Real Order Execution on Binance Futures with Stop Loss & Take Profit"""
-    if not exchange:
-        print("⚠️ Exchange API Keys missing. Running internal logic/paper mode.")
-        return {"sl_id": None, "tp_id": None}
-
-    try:
-        # 1. Place Market Entry Order
-        order = exchange.create_order(
-            symbol=symbol,
-            type='market',
-            side=side.lower(),
-            amount=qty
-        )
-        send_telegram_safe(f"✅ *REAL MARKET ORDER EXECUTED ON BINANCE!*\nOrder ID: `{order['id']}`\nSide: {side}\nQty: {qty} BTC")
-        
-        sl_side = 'sell' if side == 'BUY' else 'buy'
-        
-        # 2. Place Stop Loss Order
-        sl_order = exchange.create_order(
-            symbol=symbol,
-            type='STOP_MARKET',
-            side=sl_side,
-            amount=qty,
-            params={
-                'stopPrice': sl_price,
-                'reduceOnly': True
-            }
-        )
-
-        # 3. Place Take Profit Order
-        tp_order = exchange.create_order(
-            symbol=symbol,
-            type='TAKE_PROFIT_MARKET',
-            side=sl_side,
-            amount=qty,
-            params={
-                'stopPrice': tp_price,
-                'reduceOnly': True
-            }
-        )
-        return {"sl_id": sl_order['id'], "tp_id": tp_order['id']}
-    except Exception as e:
-        send_telegram_safe(f"❌ *REAL ORDER FAILED ON BINANCE:* `{e}`")
-        return {"sl_id": None, "tp_id": None}
-
-def update_exchange_sl(symbol, side, qty, old_sl_id, new_sl_price):
-    """Cancels Old SL Order and Places Updated Trailing SL Order"""
-    if not exchange:
-        return None
-    try:
-        if old_sl_id:
-            try:
-                exchange.cancel_order(old_sl_id, symbol)
-            except Exception as e:
-                print(f"Old SL Cancel Warning: {e}")
-        
-        sl_side = 'sell' if side == 'BUY' else 'buy'
-        new_sl_order = exchange.create_order(
-            symbol=symbol,
-            type='STOP_MARKET',
-            side=sl_side,
-            amount=qty,
-            params={
-                'stopPrice': new_sl_price,
-                'reduceOnly': True
-            }
-        )
-        return new_sl_order['id']
-    except Exception as e:
-        send_telegram_safe(f"⚠️ *Exchange Trailing SL Update Failed:* `{e}`")
-        return old_sl_id
 
 def fetch_btc_data():
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -276,7 +192,7 @@ def run_bot():
     global last_tp_hit_price, follow_through_direction, zone1_ref_level, follow_through_consumed
 
     print("🚀 Aman's Real Trading Master Bot Active...")
-    send_telegram_safe("🚀 *Master Real Trading Bot Active on Render!*")
+    send_telegram_safe("🚀 *Master Trading Bot Active on Render!*")
 
     while True:
         try:
@@ -319,17 +235,14 @@ def run_bot():
                         p_sl = p_entry - 200.0 if side == 'BUY' else p_entry + 200.0
                         p_qty = max(MIN_QTY, FIXED_RISK_USD / SL_POINTS)
 
-                        order_ids = place_real_order("BTC/USDT", side, p_qty, p_entry, p_sl, tp_p)
-
                         pyramid_position = {
                             "side": side,
                             "entry_price": p_entry,
                             "sl_price": p_sl,
-                            "qty": p_qty,
-                            "sl_id": order_ids.get("sl_id")
+                            "qty": p_qty
                         }
 
-                        msg_pyr = (f"🔺 *REAL PYRAMIDING TRADE EXECUTED ({side})*\n\n"
+                        msg_pyr = (f"🔺 *PYRAMIDING TRADE TRIGGERED ({side})*\n\n"
                                    f"📍 *Entry Price:* ${p_entry:.2f}\n"
                                    f"🛑 *Pyramid SL:* ${p_sl:.2f}\n"
                                    f"💰 *Position Size:* {p_qty:.4f} BTC")
@@ -362,8 +275,6 @@ def run_bot():
                         new_sl = entry_p + TRAIL_LOCK_PTS
                         if new_sl > sl_p:
                             current_position['sl_price'] = new_sl
-                            new_sl_id = update_exchange_sl("BTC/USDT", "BUY", qty, current_position.get("sl_id"), new_sl)
-                            current_position["sl_id"] = new_sl_id
                             send_telegram_safe(f"🛡️ *Trailing SL Updated (BUY)*\nNew SL: ${new_sl:.2f}")
 
                     if btc_price >= tp_p:
@@ -383,7 +294,7 @@ def run_bot():
                         current_position = None
                         pyramid_done_for_trade = False
 
-                        send_telegram_safe(f"🎯 *TARGET HIT (BUY)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance:${ACCOUNT_BALANCE:.2f}")
+                        send_telegram_safe(f"🎯 *TARGET HIT (BUY)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
                         time.sleep(2)
 
                     elif btc_price <= sl_p:
@@ -414,8 +325,6 @@ def run_bot():
                         new_sl = entry_p - TRAIL_LOCK_PTS
                         if new_sl < sl_p:
                             current_position['sl_price'] = new_sl
-                            new_sl_id = update_exchange_sl("BTC/USDT", "SELL", qty, current_position.get("sl_id"), new_sl)
-                            current_position["sl_id"] = new_sl_id
                             send_telegram_safe(f"🛡️ *Trailing SL Updated (SELL)*\nNew SL: ${new_sl:.2f}")
 
                     if btc_price <= tp_p:
@@ -435,7 +344,7 @@ def run_bot():
                         current_position = None
                         pyramid_done_for_trade = False
 
-                        send_telegram_safe(f"🎯 *TARGET HIT (SELL)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance:${ACCOUNT_BALANCE:.2f}")
+                        send_telegram_safe(f"🎯 *TARGET HIT (SELL)!*\nTotal Profit: +${total_pnl:.2f}\nNew Balance: ${ACCOUNT_BALANCE:.2f}")
                         time.sleep(2)
 
                     elif btc_price >= sl_p:
@@ -497,11 +406,11 @@ def run_bot():
                         if follow_through_direction == "BUY" and btc_price >= (last_tp_hit_price + 200.0):
                             buy_trigger = True
                             entry_reason = f"Follow-Through BUY Breakout (+200 pts above Prev TP ${last_tp_hit_price:.2f})"
-                            follow_through_consumed = True # Locked permanently for this cycle!
+                            follow_through_consumed = True
                         elif follow_through_direction == "SELL" and btc_price <= (last_tp_hit_price - 200.0):
                             sell_trigger = True
                             entry_reason = f"Follow-Through SELL Breakout (-200 pts below Prev TP ${last_tp_hit_price:.2f})"
-                            follow_through_consumed = True # Locked permanently for this cycle!
+                            follow_through_consumed = True
 
                     # STANDARD ENTRY
                     if not buy_trigger and not sell_trigger:
@@ -535,16 +444,13 @@ def run_bot():
                         calculated_qty = FIXED_RISK_USD / SL_POINTS
                         qty = max(MIN_QTY, calculated_qty)
 
-                        order_ids = place_real_order("BTC/USDT", side, qty, entry_p, sl_p, tp_p)
-
                         current_position = {
                             "side": side,
                             "entry_price": entry_p,
                             "sl_price": sl_p,
                             "tp_price": tp_p,
                             "qty": qty,
-                            "reason": entry_reason,
-                            "sl_id": order_ids.get("sl_id")
+                            "reason": entry_reason
                         }
 
                         last_tp_hit_price = None
@@ -556,7 +462,7 @@ def run_bot():
                         last_trade_candle_time = candle_time
                         last_trade_price = btc_price
 
-                        msg = (f"🚨 *NEW REAL MAIN TRADE EXECUTED ({side})*\n\n"
+                        msg = (f"🚨 *NEW MAIN TRADE TRIGGERED ({side})*\n\n"
                                f"📌 *Reason:* {entry_reason}\n"
                                f"🎯 *Entry:* ${entry_p:.2f}\n"
                                f"🛑 *SL:* ${sl_p:.2f}\n"
