@@ -18,8 +18,8 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --- CONFIGURATION & ENV VARS ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("8973835529:AAE3kDQTY_RGdztTmfhHFNzDimm7t784Vr0", "")
+TELEGRAM_CHAT_ID = os.environ.get("8973835529", "")
 EXCHANGE_API_KEY = os.environ.get("EXCHANGE_API_KEY", "")
 EXCHANGE_SECRET_KEY = os.environ.get("EXCHANGE_SECRET_KEY", "")
 SHEET_WEBAPP_URL = os.environ.get("SHEET_WEBAPP_URL", "")
